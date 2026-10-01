@@ -1,1 +1,603 @@
-/* Beam Statics styles (to be implemented). */
+/*
+ * Beam Statics styles.
+ *
+ * Sections:
+ *   1. Tokens          plugin colours mapped to Obsidian theme variables
+ *   2. SVG diagram     the beam drawing and the shear, moment and deflection diagrams
+ *   3. Block UI        the rendered code block: edit button, title, errors, results table
+ *   4. Editor modal    the "Beam editor" form, text view and preview
+ *   5. Print           PDF export and printing
+ *
+ * The SVG scenes carry only bsd-* classes and every colour is decided here,
+ * so light and dark themes, theme switches and PDF export work without
+ * re-rendering. Colours come only from Obsidian theme variables (the print
+ * section is the one exception, see there). Sizes are never set inline: the
+ * drawings scale through their viewBox.
+ *
+ * To restyle the drawings, override the --bsd-* tokens in a CSS snippet:
+ *
+ *   .bsd-block { --bsd-load: var(--color-orange); --bsd-area-opacity: 0.3; }
+ */
+
+/* ==========================================================================
+   1. Tokens
+   ========================================================================== */
+
+/* Scoped to .bsd-block, the container of one beam block (the editor's
+ * preview is a .bsd-block too, so it picks these up as well). */
+.bsd-block {
+	--bsd-ink: var(--text-normal);
+	--bsd-muted: var(--text-muted);
+	--bsd-faint: var(--text-faint);
+	--bsd-load: var(--color-red);
+	--bsd-reaction: var(--color-green);
+	--bsd-pos: var(--color-blue);
+	--bsd-neg: var(--color-red);
+	--bsd-deflection: var(--color-purple);
+	--bsd-area-opacity: 0.22;
+}
+
+/* ==========================================================================
+   2. SVG diagram
+   ========================================================================== */
+
+/* SVG root: rendered 1:1 at its width attribute and scaled down (never up)
+ * in narrower containers; the viewBox keeps the proportions. Labels may
+ * overhang the drawing slightly, hence overflow: visible. */
+.bsd-block .bsd-svg {
+	display: block;
+	max-width: 100%;
+	height: auto;
+	margin: 0 auto var(--size-4-2);
+	overflow: visible;
+	font-family: var(--font-interface);
+	font-size: 11px;
+}
+
+/* --- Beam, supports and hinges --- */
+
+.bsd-block .bsd-beam {
+	stroke: var(--bsd-ink);
+	stroke-width: 4px;
+	stroke-linecap: butt;
+	fill: none;
+}
+
+/* Support triangles, roller wheels and clamp blocks are filled with the
+ * page background so lines behind them do not show through. */
+.bsd-block .bsd-support {
+	fill: var(--background-primary);
+	stroke: var(--bsd-ink);
+	stroke-width: 1.5px;
+	stroke-linejoin: round;
+}
+
+.bsd-block .bsd-ground {
+	stroke: var(--bsd-ink);
+	stroke-width: 1.5px;
+	stroke-linecap: round;
+	fill: none;
+}
+
+.bsd-block .bsd-hatch {
+	stroke: var(--bsd-muted);
+	stroke-width: 1px;
+	fill: none;
+}
+
+/* A hinge is an open circle on the beam axis. */
+.bsd-block .bsd-hinge {
+	fill: var(--background-primary);
+	stroke: var(--bsd-ink);
+	stroke-width: 1.5px;
+}
+
+/* --- Applied loads --- */
+
+.bsd-block .bsd-load {
+	stroke: var(--bsd-load);
+	stroke-width: 1.5px;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	fill: none;
+}
+
+/* Arrowheads are small filled polygons (no SVG markers: they would need ids). */
+.bsd-block .bsd-arrowhead {
+	fill: var(--bsd-load);
+	stroke: none;
+}
+
+/* Translucent band under a distributed load. */
+.bsd-block .bsd-dist {
+	fill: var(--bsd-load);
+	fill-opacity: calc(var(--bsd-area-opacity) * 0.6);
+	stroke: none;
+}
+
+/* Couple arcs (also carry .bsd-load). */
+.bsd-block .bsd-moment {
+	stroke-width: 1.5px;
+}
+
+/* --- Support reactions --- */
+
+.bsd-block .bsd-reaction {
+	stroke: var(--bsd-reaction);
+	stroke-width: 1.5px;
+	stroke-linecap: round;
+	fill: none;
+}
+
+.bsd-block .bsd-arrowhead.bsd-reaction-head {
+	fill: var(--bsd-reaction);
+}
+
+/* --- Dimension line --- */
+
+.bsd-block .bsd-dim {
+	stroke: var(--bsd-faint);
+	stroke-width: 1px;
+	fill: none;
+}
+
+/* --- Text labels ---
+ * Font sizes match LAYOUT.fontSize (11px) and LAYOUT.smallFontSize (10px) in
+ * src/render/scene.ts, which the label placement relies on. Labels that can
+ * sit on top of curves or fills get a halo in the page background colour
+ * (paint-order draws the stroke first) so they stay readable. */
+.bsd-block .bsd-load-label,
+.bsd-block .bsd-reaction-label,
+.bsd-block .bsd-value,
+.bsd-block .bsd-dim-label {
+	paint-order: stroke;
+	stroke: var(--background-primary);
+	stroke-width: 3px;
+	stroke-linejoin: round;
+}
+
+.bsd-block .bsd-load-label {
+	fill: var(--bsd-load);
+	font-size: 11px;
+}
+
+.bsd-block .bsd-reaction-label {
+	fill: var(--bsd-reaction);
+	font-size: 11px;
+}
+
+.bsd-block .bsd-dim-label {
+	fill: var(--bsd-muted);
+	font-size: 10px;
+}
+
+/* --- Diagrams: title, axis, guides --- */
+
+.bsd-block .bsd-diagram-title {
+	fill: var(--bsd-ink);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.bsd-block .bsd-axis {
+	stroke: var(--bsd-muted);
+	stroke-width: 1px;
+}
+
+/* Faint dashed verticals at key points, aligned with the beam drawing. */
+.bsd-block .bsd-guide {
+	stroke: var(--bsd-faint);
+	stroke-width: 1px;
+	stroke-dasharray: 2 3;
+	opacity: 0.6;
+}
+
+/* --- Diagrams: filled areas (blue positive, red negative) and curves --- */
+
+.bsd-block .bsd-area {
+	stroke: none;
+	fill-opacity: var(--bsd-area-opacity);
+}
+
+.bsd-block .bsd-area.bsd-pos {
+	fill: var(--bsd-pos);
+}
+
+.bsd-block .bsd-area.bsd-neg {
+	fill: var(--bsd-neg);
+}
+
+/* Deflection gets a lighter fill: the curve itself is what matters. */
+.bsd-block .bsd-area.bsd-deflection-area {
+	fill: var(--bsd-deflection);
+	fill-opacity: calc(var(--bsd-area-opacity) * 0.5);
+}
+
+.bsd-block .bsd-curve {
+	stroke: var(--bsd-ink);
+	stroke-width: 1.5px;
+	stroke-linejoin: round;
+	fill: none;
+}
+
+.bsd-block .bsd-curve.bsd-deflection-curve {
+	stroke: var(--bsd-deflection);
+	stroke-width: 2px;
+}
+
+/* --- Diagrams: value labels --- */
+
+.bsd-block .bsd-value {
+	fill: var(--bsd-muted);
+	font-size: 10px;
+}
+
+/* Extremes stand out from ordinary key-point values. */
+.bsd-block .bsd-value.bsd-extreme {
+	fill: var(--bsd-ink);
+	font-weight: 600;
+}
+
+/* Zero of the shear force: a short tick on the axis and its position label. */
+.bsd-block line.bsd-zero {
+	stroke: var(--bsd-ink);
+	stroke-width: 1.5px;
+}
+
+.bsd-block text.bsd-zero {
+	fill: var(--bsd-muted);
+	font-style: italic;
+}
+
+/* Placeholder text, e.g. when deflection is not available. */
+.bsd-block .bsd-note {
+	fill: var(--bsd-muted);
+	font-size: 10px;
+	font-style: italic;
+}
+
+/* ==========================================================================
+   3. Block UI
+   ========================================================================== */
+
+/* Positioned so the edit button can sit in its top left corner. */
+.bsd-block {
+	position: relative;
+	margin: var(--size-4-2) 0;
+}
+
+/* No padding: its width is the width the drawings are laid out for. */
+.bsd-output {
+	padding: 0;
+}
+
+/* --- Edit button: top left, because Live Preview puts its own button at the top right --- */
+
+.bsd-toolbar {
+	position: absolute;
+	top: var(--size-4-1);
+	left: var(--size-4-1);
+	z-index: 1;
+	display: flex;
+	gap: var(--size-4-1);
+	opacity: 0;
+	transition: opacity 120ms ease-in-out;
+}
+
+.bsd-block:hover > .bsd-toolbar,
+.bsd-toolbar:focus-within {
+	opacity: 1;
+}
+
+/* Touch screens cannot hover: keep the button visible there. */
+@media (hover: none) {
+	.bsd-toolbar {
+		opacity: 1;
+	}
+}
+
+.bsd-toolbar-button {
+	padding: var(--size-2-2);
+	background-color: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	box-shadow: none;
+}
+
+.bsd-title {
+	margin-bottom: var(--size-4-2);
+	/* Centred and padded so the edit button never covers it. */
+	padding: 0 var(--size-4-8);
+	text-align: center;
+	font-weight: var(--font-semibold);
+}
+
+/* --- Errors and warnings --- */
+
+.bsd-error {
+	margin: var(--size-4-2) 0;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-error);
+	border-radius: var(--radius-s);
+	color: var(--text-error);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	white-space: pre-wrap;
+}
+
+/* In a note the edit button sits over the top left corner of the error box. */
+.bsd-block > .bsd-output > .bsd-error:first-child .bsd-error-heading {
+	padding-left: var(--size-4-8);
+}
+
+.bsd-error-heading {
+	font-weight: var(--font-semibold);
+}
+
+.bsd-error-list {
+	margin: var(--size-4-1) 0 0;
+	padding-left: var(--size-4-5);
+}
+
+.bsd-error-list li + li {
+	margin-top: var(--size-4-1);
+}
+
+/* Messages and source lines quote what the user typed, which can be one long
+ * unbroken word (a URL, a mistyped unit): let it wrap instead of overflowing
+ * the note on narrow screens. */
+.bsd-error-message,
+.bsd-error-source {
+	overflow-wrap: anywhere;
+}
+
+/* The offending source line, under its message. */
+.bsd-error-source {
+	display: block;
+	margin-top: var(--size-2-1);
+	color: var(--text-muted);
+	background: none;
+}
+
+.bsd-warnings {
+	margin: var(--size-4-2) 0;
+	padding-left: var(--size-4-5);
+	color: var(--text-warning);
+	font-size: var(--font-ui-small);
+}
+
+/* --- Results table --- */
+
+/* Two classes deep so Obsidian's own reading-view table styles do not win. */
+.bsd-block .bsd-table {
+	width: 100%;
+	margin: var(--size-4-2) 0;
+	border-collapse: collapse;
+	font-size: var(--font-ui-small);
+	font-variant-numeric: tabular-nums;
+}
+
+.bsd-block .bsd-table caption {
+	padding-bottom: var(--size-4-1);
+	text-align: left;
+	font-weight: var(--font-semibold);
+}
+
+.bsd-block .bsd-table th,
+.bsd-block .bsd-table td {
+	padding: var(--size-2-2) var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	background: none;
+}
+
+.bsd-block .bsd-table th {
+	text-align: left;
+	font-weight: var(--font-normal);
+	color: var(--text-muted);
+}
+
+.bsd-block .bsd-table td {
+	text-align: right;
+}
+
+.bsd-disclaimer {
+	margin-top: var(--size-4-1);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* ==========================================================================
+   4. Editor modal
+   ========================================================================== */
+
+.modal.bsd-modal {
+	--dialog-width: 820px;
+}
+
+/* --- Form / Text tabs --- */
+
+.bsd-modal-tabs {
+	display: flex;
+	gap: var(--size-4-1);
+	margin: var(--size-4-2) 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.bsd-modal-tabs .bsd-modal-tab {
+	padding: var(--size-4-1) var(--size-4-3);
+	border: none;
+	border-bottom: 2px solid transparent;
+	border-radius: 0;
+	background: none;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: var(--cursor);
+}
+
+.bsd-modal-tabs .bsd-modal-tab.is-active {
+	border-bottom-color: var(--interactive-accent);
+	color: var(--text-normal);
+}
+
+/* --- Notes, hints and messages --- */
+
+.bsd-modal-note,
+.bsd-modal-hint,
+.bsd-modal-status {
+	margin: var(--size-4-1) 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.bsd-modal-note {
+	color: var(--text-warning);
+}
+
+/* Syntax errors that keep the text from opening in the form. They sit right
+ * under the tab bar, which already provides the spacing above. */
+.bsd-modal-parse-errors {
+	margin-top: 0;
+}
+
+.bsd-modal-submit-error {
+	margin: var(--size-4-1) 0;
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+/* Inline "replace with example?" confirmation. */
+.bsd-modal-confirm {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+}
+
+.bsd-modal-confirm-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+/* --- Form rows --- */
+
+/* Support, hinge and load rows: several small controls that wrap when space runs out. */
+.bsd-modal-row .setting-item-control {
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.bsd-modal-row .setting-item-control input[type='text'] {
+	width: 8em;
+	min-width: 0;
+}
+
+/* "Add support" and similar buttons close the list above them: no divider in
+ * between. Two classes deep to win over Obsidian's own .setting-item border. */
+.bsd-modal .bsd-modal-add {
+	border-top: none;
+}
+
+.bsd-modal-inline-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+/* Section dimensions are indented under the section shape they belong to. */
+.bsd-modal-dim {
+	padding-left: var(--size-4-4);
+}
+
+/* --- Text view and preview --- */
+
+.bsd-modal-textarea {
+	width: 100%;
+	min-height: 16em;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	resize: vertical;
+}
+
+.bsd-modal-preview {
+	padding: var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+.bsd-modal-preview .bsd-block {
+	margin: 0;
+}
+
+.bsd-modal-footer {
+	margin-top: var(--size-4-3);
+}
+
+/* --- Phones and narrow windows: stack each setting and let inputs take the full width --- */
+
+@media (max-width: 600px) {
+	.bsd-modal .setting-item:not(.setting-item-heading) {
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--size-4-2);
+	}
+
+	.bsd-modal .setting-item-control {
+		justify-content: flex-start;
+		flex-wrap: wrap;
+	}
+
+	.bsd-modal .setting-item-control input[type='text'],
+	.bsd-modal .setting-item-control select {
+		flex: 1 1 8em;
+		width: 100%;
+	}
+}
+
+/* Same layout on phones whatever the reported width (Obsidian adds .is-phone to the body). */
+.is-phone .bsd-modal .setting-item:not(.setting-item-heading) {
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--size-4-2);
+}
+
+.is-phone .bsd-modal .setting-item-control {
+	justify-content: flex-start;
+	flex-wrap: wrap;
+}
+
+.is-phone .bsd-modal .setting-item-control input[type='text'],
+.is-phone .bsd-modal .setting-item-control select {
+	flex: 1 1 8em;
+	width: 100%;
+}
+
+/* ==========================================================================
+   5. Print
+   ========================================================================== */
+
+@media print {
+	/* Theme text colours can be very light (or white in a dark theme): never
+	 * print light grey on white paper. These fixed greys are the only
+	 * colours not taken from the theme. */
+	.bsd-block {
+		--bsd-ink: #222;
+		--bsd-muted: #555;
+		--bsd-faint: #999;
+	}
+
+	/* The edit button does nothing on paper. */
+	.bsd-toolbar {
+		display: none;
+	}
+
+	/* Keep each drawing and the table on one page. */
+	.bsd-block .bsd-svg,
+	.bsd-block .bsd-table {
+		break-inside: avoid;
+	}
+}
