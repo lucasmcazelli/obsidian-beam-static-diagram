@@ -1,0 +1,10 @@
+{
+	"id": "beam-statics",
+	"name": "Beam Statics",
+	"version": "0.1.0",
+	"minAppVersion": "1.13.0",
+	"description": "Draw beams from a simple text block and compute support reactions, shear force, bending moment and deflection diagrams.",
+	"author": "lucasmcazelli",
+	"authorUrl": "https://github.com/lucasmcazelli",
+	"isDesktopOnly": false
+}

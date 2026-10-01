@@ -1,0 +1,49 @@
+{
+	"name": "beam-statics",
+	"version": "0.1.0",
+	"description": "Compute and draw beam reactions, shear force, bending moment and deflection diagrams from a text block in your notes.",
+	"main": "main.js",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"typecheck": "tsc -noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"coverage": "vitest run --coverage",
+		"lint": "eslint .",
+		"version": "node version-bump.mjs && git add manifest.json versions.json"
+	},
+	"keywords": [
+		"obsidian",
+		"beam",
+		"statics",
+		"structural-engineering",
+		"shear-force",
+		"bending-moment"
+	],
+	"author": "lucasmcazelli",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lucasmcazelli/obsidian-beam-static-diagram.git"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.39.4",
+		"@types/node": "^22.15.17",
+		"@vitest/coverage-v8": "^5.0.3",
+		"esbuild": "0.28.2",
+		"eslint": "^9.39.4",
+		"eslint-plugin-obsidianmd": "^0.4.2",
+		"globals": "^17.6.0",
+		"jiti": "^2.6.1",
+		"obsidian": "1.13.1",
+		"typescript": "~5.9.3",
+		"typescript-eslint": "^8.59.1",
+		"vitest": "^5.0.3"
+	},
+	"engines": {
+		"node": ">=22.12.0"
+	}
+}

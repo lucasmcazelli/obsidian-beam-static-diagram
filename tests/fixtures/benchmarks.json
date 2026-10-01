@@ -1,0 +1,1945 @@
+{
+ "meta": {
+  "units": {
+   "length": "m",
+   "force": "kN",
+   "moment": "kN*m",
+   "distributed": "kN/m",
+   "EI": "kN*m^2",
+   "deflection": "m",
+   "slope": "rad"
+  },
+  "EI_note": "E = 200 GPa = 2e8 kN/m^2, I = 8e-5 m^4 (8000 cm^4) -> EI = 16000 kN*m^2",
+  "sign_convention": {
+   "x": "from left end, +right",
+   "Fy": "+up (so gravity loads are negative)",
+   "w": "+up (kN/m)",
+   "Mz_ccw": "applied couples and reaction couples: +counter-clockwise (right-hand rule, z out of page)",
+   "V": "+ when resultant of forces left of the section is upward (Hibbeler/Gere positive shear)",
+   "M": "+ sagging (compression top fibre)",
+   "v": "deflection, +up (so sagging deflections are negative)"
+  },
+  "tolerances": {
+   "reactions_rel": 1e-09,
+   "M_V_rel": 1e-09,
+   "deflection_rel": 1e-07,
+   "x_location_abs_m": 0.0001
+  },
+  "verification": "Each closed-form value was cross-checked against an independent exact rational-arithmetic singularity-function solver; agreement < 1e-9 relative."
+ },
+ "cases": [
+  {
+   "id": "SS-P-mid",
+   "description": "Simply supported, central point load",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 3.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = R_B = P/2",
+    "Mmax": "P*L/4 at L/2",
+    "dmax": "P*L^3/(48*E*I) at L/2",
+    "theta_A": "P*L^2/(16*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 5.0,
+       "exact": "5"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 5.0,
+       "exact": "5"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 5.0,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 3.0,
+      "V_left": 5.0,
+      "M_left": 14.999999999995,
+      "V_right": -5.0,
+      "M_right": 15.0,
+      "v": -0.0028125
+     },
+     {
+      "x": 6.0,
+      "V_left": -5.0,
+      "M_left": 5e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 5.0,
+    "M_max": {
+     "value": 15.0,
+     "x": 3.0
+    },
+    "deflection_min": {
+     "value_m": -0.0028125,
+     "x": 3.0,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": -0.00140625
+   }
+  },
+  {
+   "id": "SS-P-off",
+   "description": "Simply supported, point load at a=2 m",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 2.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = P*b/L, R_B = P*a/L",
+    "Mmax": "P*a*b/L at x=a",
+    "d_load": "P*a^2*b^2/(3*E*I*L)",
+    "dmax": "with a'=max(a,b), b'=min(a,b): P*a'*b'*(a'+2b')*sqrt(3a'(a'+2b'))/(27*E*I*L) at sqrt(a'(a'+2b')/3) from the support farther from the load"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 6.666666666666667,
+       "exact": "20/3"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 3.3333333333333335,
+       "exact": "10/3"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 6.666666666666667,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 2.0,
+      "V_left": 6.666666666666667,
+      "M_left": 13.333333333326667,
+      "V_right": -3.3333333333333335,
+      "M_right": 13.333333333333334,
+      "v": -0.0022222222222222222
+     },
+     {
+      "x": 6.0,
+      "V_left": -3.3333333333333335,
+      "M_left": 3.333333333333333e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 6.666666666667,
+    "M_max": {
+     "value": 13.333333333333334,
+     "x": 2.0
+    },
+    "deflection_min": {
+     "value_m": -0.0024192491286747437,
+     "x": 2.734013676289096,
+     "source": "closed-form"
+    },
+    "deflection_at": [
+     {
+      "x": 2.0,
+      "value_m": -0.0022222222222222222
+     }
+    ],
+    "slope_at_x0_rad": -0.001388888888888889
+   }
+  },
+  {
+   "id": "SS-UDL",
+   "description": "Simply supported, full UDL",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "w*L/2",
+    "Mmax": "w*L^2/8 at L/2",
+    "dmax": "5*w*L^4/(384*E*I) at L/2",
+    "theta_A": "w*L^3/(24*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 15.0,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -14.999999999995,
+      "M_left": 1.49999999999975e-11,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 15.0,
+    "M_max": {
+     "value": 22.5,
+     "x": 3.0
+    },
+    "deflection_min": {
+     "value_m": -0.0052734375,
+     "x": 3.0,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": -0.0028125
+   }
+  },
+  {
+   "id": "SS-UDL-half",
+   "description": "Simply supported, UDL on left half [0,3]",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 3.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = 3wL/8, R_B = wL/8",
+    "Mmax": "9*w*L^2/128 at x = 3L/8 (V=0)",
+    "d_mid": "5*w*L^4/(768*E*I) (half of full-UDL value by symmetry)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 11.25,
+       "exact": "45/4"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 3.75,
+       "exact": "15/4"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 11.25,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 3.0,
+      "V_left": -3.749999999995,
+      "M_left": 11.25000000000375,
+      "V_right": -3.75,
+      "M_right": 11.25,
+      "v": -0.00263671875
+     },
+     {
+      "x": 6.0,
+      "V_left": -3.75,
+      "M_left": 3.75e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 11.25,
+    "M_max": {
+     "value": 12.65625,
+     "x": 2.25
+    },
+    "deflection_min": {
+     "value_m": -0.002658160118,
+     "x": 2.75867,
+     "source": "exact solver + numeric root (not textbook closed-form)"
+    },
+    "deflection_at": [
+     {
+      "x": 3.0,
+      "value_m": -0.00263671875
+     }
+    ],
+    "slope_at_x0_rad": -0.00158203125
+   }
+  },
+  {
+   "id": "SS-TRI",
+   "description": "Simply supported, triangular load 0 at A to 5 kN/m at B",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": 0.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = W/3, R_B = 2W/3, W = w0*L/2",
+    "Mmax": "w0*L^2/(9*sqrt(3)) at x = L/sqrt(3)",
+    "dmax": "w0*x*(7L^4-10L^2x^2+3x^4)/(360*E*I*L) at x = L*sqrt(1-sqrt(8/15)) = 0.519330L; = 0.0065222*w0*L^4/(E*I)",
+    "d_mid": "5*w0*L^4/(768*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 5.0,
+       "exact": "5"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 10.0,
+       "exact": "10"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 5.0,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -9.999999999995,
+      "M_left": 9.9999999999975e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 9.999999999995,
+    "M_max": {
+     "value": 11.547005383792516,
+     "x": 3.464101615137755
+    },
+    "deflection_min": {
+     "value_m": -0.002641484613927342,
+     "x": 3.1159777341553694,
+     "source": "closed-form"
+    },
+    "deflection_at": [
+     {
+      "x": 3.0,
+      "value_m": -0.00263671875
+     }
+    ],
+    "slope_at_x0_rad": -0.0013125
+   }
+  },
+  {
+   "id": "CANT-P",
+   "description": "Cantilever (fixed x=0), tip point load",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 6.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R = P, M_A = P*L",
+    "dmax": "P*L^3/(3*E*I) at tip",
+    "theta_tip": "P*L^2/(2*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 10.0,
+       "exact": "10"
+      },
+      "Mz_ccw": {
+       "value": 60.0,
+       "exact": "60"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 10.0,
+      "M_right": -60.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 10.0,
+      "M_left": -1e-11,
+      "v": -0.045
+     }
+    ],
+    "V_abs_max": 10.0,
+    "M_min": {
+     "value": -60.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -60.0,
+    "deflection_min": {
+     "value_m": -0.045,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "slope_at_tip_rad": -0.01125,
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CANT-UDL",
+   "description": "Cantilever, full UDL",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R = w*L, M_A = w*L^2/2",
+    "dmax": "w*L^4/(8*E*I)",
+    "theta_tip": "w*L^3/(6*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 30.0,
+       "exact": "30"
+      },
+      "Mz_ccw": {
+       "value": 90.0,
+       "exact": "90"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 30.0,
+      "M_right": -90.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 5e-12,
+      "M_left": -2.5e-24,
+      "v": -0.050625
+     }
+    ],
+    "V_abs_max": 30.0,
+    "M_min": {
+     "value": -90.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -90.0,
+    "deflection_min": {
+     "value_m": -0.050625,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "slope_at_tip_rad": -0.01125,
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CANT-M",
+   "description": "Cantilever, clockwise tip couple 20 kN*m",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "moment",
+     "x": 6.0,
+     "Mz_ccw": -20.0,
+     "note": "20 kN*m clockwise"
+    }
+   ],
+   "formulas": {
+    "R": "R = 0, M_A = M0",
+    "dmax": "M0*L^2/(2*E*I)",
+    "theta_tip": "M0*L/(E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 0.0,
+       "exact": "0"
+      },
+      "Mz_ccw": {
+       "value": 20.0,
+       "exact": "20"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 0.0,
+      "M_right": -20.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 0.0,
+      "M_left": -20.0,
+      "v": -0.0225
+     }
+    ],
+    "V_abs_max": 0.0,
+    "M_min": {
+     "value": -20.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -20.0,
+    "deflection_min": {
+     "value_m": -0.0225,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "slope_at_tip_rad": -0.0075,
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CANT-TRI-root",
+   "description": "Cantilever, triangular load 5 kN/m at fixed end to 0 at tip",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": 0.0
+    }
+   ],
+   "formulas": {
+    "R": "R = w0*L/2, M_A = w0*L^2/6",
+    "dmax": "w0*L^4/(30*E*I)",
+    "theta_tip": "w0*L^3/(24*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      },
+      "Mz_ccw": {
+       "value": 30.0,
+       "exact": "30"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 15.0,
+      "M_right": -30.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 4.166666666666667e-25,
+      "M_left": -1.388888888888889e-37,
+      "v": -0.0135
+     }
+    ],
+    "V_abs_max": 15.0,
+    "M_min": {
+     "value": -30.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -30.0,
+    "deflection_min": {
+     "value_m": -0.0135,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "slope_at_tip_rad": -0.0028125,
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CANT-TRI-tip",
+   "description": "Cantilever, triangular load 0 at fixed end to 5 kN/m at tip",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": 0.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R = w0*L/2, M_A = w0*L^2/3",
+    "dmax": "11*w0*L^4/(120*E*I)",
+    "theta_tip": "w0*L^3/(8*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      },
+      "Mz_ccw": {
+       "value": 60.0,
+       "exact": "60"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 15.0,
+      "M_right": -60.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 4.999999999999584e-12,
+      "M_left": -2.499999999999861e-24,
+      "v": -0.037125
+     }
+    ],
+    "V_abs_max": 15.0,
+    "M_min": {
+     "value": -60.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -60.0,
+    "deflection_min": {
+     "value_m": -0.037125,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "slope_at_tip_rad": -0.0084375,
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CANT-P-a",
+   "description": "Cantilever, point load at a=4 m (L=6)",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 4.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R = P, M_A = P*a",
+    "dmax": "P*a^2*(3L-a)/(6*E*I) at tip",
+    "d_load": "P*a^3/(3*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 10.0,
+       "exact": "10"
+      },
+      "Mz_ccw": {
+       "value": 40.0,
+       "exact": "40"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 10.0,
+      "M_right": -40.0,
+      "v": 0.0
+     },
+     {
+      "x": 4.0,
+      "V_left": 10.0,
+      "M_left": -1e-11,
+      "V_right": 0.0,
+      "M_right": 0.0,
+      "v": -0.013333333333333334
+     },
+     {
+      "x": 6.0,
+      "V_left": 0.0,
+      "M_left": 0.0,
+      "v": -0.023333333333333334
+     }
+    ],
+    "V_abs_max": 10.0,
+    "M_min": {
+     "value": -40.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -40.0,
+    "deflection_min": {
+     "value_m": -0.023333333333333334,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "deflection_at": [
+     {
+      "x": 4.0,
+      "value_m": -0.013333333333333334
+     }
+    ],
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "OH-P",
+   "description": "Overhanging: pin x=0, roller x=4, point load at free end x=6",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 4.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 6.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = -P*a/l (downward), R_B = P*(l+a)/l",
+    "Mmin": "-P*a at support B",
+    "dmax": "tip: P*a^2*(l+a)/(3*E*I)",
+    "dup": "P*a*l^2/(9*sqrt(3)*E*I) upward at x = l/sqrt(3)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": -5.0,
+       "exact": "-5"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": -5.0,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 4.0,
+      "V_left": -5.0,
+      "M_left": -19.999999999995,
+      "V_right": 10.0,
+      "M_right": -20.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 10.0,
+      "M_left": -1e-11,
+      "v": -0.005
+     }
+    ],
+    "V_abs_max": 10.0,
+    "M_min": {
+     "value": -20.0,
+     "x": 4.0
+    },
+    "deflection_min": {
+     "value_m": -0.005,
+     "x": 6.0,
+     "source": "closed-form"
+    },
+    "deflection_max_up": {
+     "value_m": 0.0012830005981991684,
+     "x": 2.3094010767585034
+    },
+    "slope_at_x0_rad": 0.0008333333333333334
+   }
+  },
+  {
+   "id": "OH-UDL",
+   "description": "Overhanging: pin x=0, roller x=4, UDL over full 6 m",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 4.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = w(l^2-a^2)/(2l), R_B = w(l+a)^2/(2l)",
+    "Mmin": "-w*a^2/2 at B",
+    "Mmax": "R_A^2/(2w) at x=R_A/w",
+    "d_tip": "w*a*(4*a^2*l - l^3 + 3*a^3)/(24*E*I) downward (here l=4, a=2)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 7.5,
+       "exact": "15/2"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 22.5,
+       "exact": "45/2"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 7.5,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 4.0,
+      "V_left": -12.499999999995,
+      "M_left": -9.9999999999875,
+      "V_right": 10.0,
+      "M_right": -10.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": 5e-12,
+      "M_left": -2.5e-24,
+      "v": -0.000625
+     }
+    ],
+    "V_abs_max": 12.499999999995,
+    "M_max": {
+     "value": 5.625,
+     "x": 1.5
+    },
+    "M_min": {
+     "value": -10.0,
+     "x": 4.0
+    },
+    "deflection_min": {
+     "value_m": -0.000625,
+     "x": 6.0,
+     "source": "exact solver + numeric root (not textbook closed-form)"
+    },
+    "deflection_at": [
+     {
+      "x": 6.0,
+      "value_m": -0.000625
+     }
+    ],
+    "slope_at_x0_rad": -0.0004166666666666667
+   }
+  },
+  {
+   "id": "PROP-UDL",
+   "description": "Propped cantilever (fixed x=0, roller x=6), full UDL",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R_fixed = 5wL/8, R_roller = 3wL/8, M_fixed = wL^2/8",
+    "Mmax": "9wL^2/128 at 5L/8 from fixed end",
+    "dmax": "w*x^2*(3L^2-5Lx+2x^2)/(48EI) at x = L(15-sqrt(33))/16 = 0.578465L from fixed end; = 0.0054161 wL^4/EI (often quoted wL^4/185EI)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 18.75,
+       "exact": "75/4"
+      },
+      "Mz_ccw": {
+       "value": 22.5,
+       "exact": "45/2"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 11.25,
+       "exact": "45/4"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 18.75,
+      "M_right": -22.5,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -11.249999999995,
+      "M_left": 1.12499999999975e-11,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 18.75,
+    "M_max": {
+     "value": 12.65625,
+     "x": 3.75
+    },
+    "M_min": {
+     "value": -22.5,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -22.5,
+    "deflection_min": {
+     "value_m": -0.002193529250360636,
+     "x": 3.4707890075482393,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "PROP-P",
+   "description": "Propped cantilever (fixed x=0, roller x=6), central point load",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 3.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R_fixed = 11P/16, R_roller = 5P/16, M_fixed = 3PL/16",
+    "Mmax": "5PL/32 under load",
+    "dmax": "P*L^3/(48*sqrt(5)*E*I) at L/sqrt(5) from roller (0.447L)",
+    "d_load": "7*P*L^3/(768*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 6.875,
+       "exact": "55/8"
+      },
+      "Mz_ccw": {
+       "value": 11.25,
+       "exact": "45/4"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 3.125,
+       "exact": "25/8"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 6.875,
+      "M_right": -11.25,
+      "v": 0.0
+     },
+     {
+      "x": 3.0,
+      "V_left": 6.875,
+      "M_left": 9.374999999993125,
+      "V_right": -3.125,
+      "M_right": 9.375,
+      "v": -0.00123046875
+     },
+     {
+      "x": 6.0,
+      "V_left": -3.125,
+      "M_left": 3.125e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 6.875,
+    "M_max": {
+     "value": 9.375,
+     "x": 3.0
+    },
+    "M_min": {
+     "value": -11.25,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -11.25,
+    "deflection_min": {
+     "value_m": -0.0012577882373436316,
+     "x": 3.3167184270002528,
+     "source": "closed-form"
+    },
+    "deflection_at": [
+     {
+      "x": 3.0,
+      "value_m": -0.00123046875
+     }
+    ],
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "FF-UDL",
+   "description": "Fixed-fixed, full UDL",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "fixed",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "wL/2, M_ends = wL^2/12",
+    "Mmax": "wL^2/24 at mid",
+    "dmax": "w*L^4/(384*E*I)",
+    "M_zero": "x = L(1/2 - 1/(2*sqrt(3))) = 0.211325L"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      },
+      "Mz_ccw": {
+       "value": 15.0,
+       "exact": "15"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 15.0,
+       "exact": "15"
+      },
+      "Mz_ccw": {
+       "value": -15.0,
+       "exact": "-15"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 15.0,
+      "M_right": -15.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -14.999999999995,
+      "M_left": -14.999999999985,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 15.0,
+    "M_max": {
+     "value": 7.5,
+     "x": 3.0
+    },
+    "M_min": {
+     "value": -15.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -15.0,
+    "M_zero_crossing_x": 1.2679491924311224,
+    "deflection_min": {
+     "value_m": -0.0010546875,
+     "x": 3.0,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "FF-P",
+   "description": "Fixed-fixed, central point load",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "fixed",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 3.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "P/2, M_ends = PL/8",
+    "Mmax": "PL/8 at mid",
+    "dmax": "P*L^3/(192*E*I)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 5.0,
+       "exact": "5"
+      },
+      "Mz_ccw": {
+       "value": 7.5,
+       "exact": "15/2"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 5.0,
+       "exact": "5"
+      },
+      "Mz_ccw": {
+       "value": -7.5,
+       "exact": "-15/2"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 5.0,
+      "M_right": -7.5,
+      "v": 0.0
+     },
+     {
+      "x": 3.0,
+      "V_left": 5.0,
+      "M_left": 7.499999999995,
+      "V_right": -5.0,
+      "M_right": 7.5,
+      "v": -0.000703125
+     },
+     {
+      "x": 6.0,
+      "V_left": -5.0,
+      "M_left": -7.499999999995,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 5.0,
+    "M_max": {
+     "value": 7.5,
+     "x": 3.0
+    },
+    "M_min": {
+     "value": -7.5,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -7.5,
+    "deflection_min": {
+     "value_m": -0.000703125,
+     "x": 3.0,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "FF-P-off",
+   "description": "Fixed-fixed, point load at a=2 m",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "fixed",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "point",
+     "x": 2.0,
+     "Fy": -10.0
+    }
+   ],
+   "formulas": {
+    "R": "R_A = P*b^2*(3a+b)/L^3, R_B = P*a^2*(a+3b)/L^3",
+    "M_ends": "M_A = P*a*b^2/L^2, M_B = P*a^2*b/L^2",
+    "Mmax": "2*P*a^2*b^2/L^3 under load",
+    "dmax": "2*P*a'^3*b'^2/(3*E*I*(3a'+b')^2) at 2a'L/(3a'+b') from the end farther from the load (a'=max(a,b))"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 7.407407407407407,
+       "exact": "200/27"
+      },
+      "Mz_ccw": {
+       "value": 8.88888888888889,
+       "exact": "80/9"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 2.5925925925925926,
+       "exact": "70/27"
+      },
+      "Mz_ccw": {
+       "value": -4.444444444444445,
+       "exact": "-40/9"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 7.407407407407407,
+      "M_right": -8.88888888888889,
+      "v": 0.0
+     },
+     {
+      "x": 2.0,
+      "V_left": 7.407407407407407,
+      "M_left": 5.925925925918518,
+      "V_right": -2.5925925925925926,
+      "M_right": 5.925925925925926,
+      "v": -0.0004938271604938272
+     },
+     {
+      "x": 6.0,
+      "V_left": -2.5925925925925926,
+      "M_left": -4.444444444441852,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 7.407407407407,
+    "M_max": {
+     "value": 5.925925925925926,
+     "x": 2.0
+    },
+    "M_min": {
+     "value": -8.88888888888889,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -8.88888888888889,
+    "deflection_min": {
+     "value_m": -0.0005442176870748299,
+     "x": 2.5714285714285716,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "CONT2-UDL",
+   "description": "Two-span continuous 2x6 m, supports x=0,6,12, full UDL",
+   "L": 12.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    },
+    {
+     "id": "C",
+     "type": "roller",
+     "x": 12.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 12.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "3wL/8, 10wL/8, 3wL/8",
+    "Mmin": "-wL^2/8 over middle support",
+    "Mmax": "9wL^2/128 at 3L/8 from end supports",
+    "dmax": "0.0054161 wL^4/EI at 0.421535L from end supports"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 11.25,
+       "exact": "45/4"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 37.5,
+       "exact": "75/2"
+      }
+     },
+     "C": {
+      "Fy": {
+       "value": 11.25,
+       "exact": "45/4"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 11.25,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -18.749999999995,
+      "M_left": -22.49999999998125,
+      "V_right": 18.75,
+      "M_right": -22.5,
+      "v": 0.0
+     },
+     {
+      "x": 12.0,
+      "V_left": -11.249999999995,
+      "M_left": 1.12499999999975e-11,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 18.75,
+    "M_max": {
+     "value": 12.65625,
+     "x": 2.25
+    },
+    "M_min": {
+     "value": -22.5,
+     "x": 6.0
+    },
+    "deflection_min": {
+     "value_m": -0.002193529250360636,
+     "x": 2.5292109924517607,
+     "source": "closed-form"
+    },
+    "slope_at_x0_rad": -0.00140625
+   }
+  },
+  {
+   "id": "GERBER-UDL",
+   "description": "Fixed x=0, internal hinge x=2, roller x=6, full UDL 5 kN/m",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "fixed",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [
+    2.0
+   ],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "suspended span 2..6 simply supported: hinge shear = w*4/2; cantilever 0..2 carries it",
+    "d_hinge": "P_h*a^3/(3EI) + w*a^4/(8EI) with P_h=10, a=2",
+    "dmax": "v = v_h(1-s/4) + SS-UDL(s); dv/ds=0 -> s^3-6s^2+5=0 -> s=1 (x=3)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 20.0,
+       "exact": "20"
+      },
+      "Mz_ccw": {
+       "value": 30.0,
+       "exact": "30"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 10.0,
+       "exact": "10"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 20.0,
+      "M_right": -30.0,
+      "v": 0.0
+     },
+     {
+      "x": 2.0,
+      "V_left": 10.000000000005,
+      "M_left": -1.00000000000025e-11,
+      "V_right": 10.0,
+      "M_right": 0.0,
+      "v": -0.0022916666666666667
+     },
+     {
+      "x": 6.0,
+      "V_left": -9.999999999995,
+      "M_left": 9.9999999999975e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 20.0,
+    "M_max": {
+     "value": 10.0,
+     "x": 4.0
+    },
+    "M_min": {
+     "value": -30.0,
+     "x": 0.0
+    },
+    "M_internal_at_x0": -30.0,
+    "deflection_min": {
+     "value_m": -0.0024609375,
+     "x": 3.0,
+     "source": "exact solver + numeric root (not textbook closed-form)"
+    },
+    "deflection_at": [
+     {
+      "x": 2.0,
+      "value_m": -0.0022916666666666667
+     }
+    ],
+    "slope_at_x0_rad": 0.0
+   }
+  },
+  {
+   "id": "SS-M-mid",
+   "description": "Simply supported, clockwise couple 20 kN*m at mid-span",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "moment",
+     "x": 3.0,
+     "Mz_ccw": -20.0,
+     "note": "20 kN*m clockwise"
+    }
+   ],
+   "formulas": {
+    "R": "R_A = -M0/L, R_B = +M0/L (couple cw)",
+    "Mjump": "M jumps by +M0 (cw couple) from -M0/2 to +M0/2",
+    "dmax": "M0*L^2/(72*sqrt(3)*E*I) at L/2 -/+ L/(2*sqrt(3))"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": -3.3333333333333335,
+       "exact": "-10/3"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 3.3333333333333335,
+       "exact": "10/3"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": -3.3333333333333335,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 3.0,
+      "V_left": -3.3333333333333335,
+      "M_left": -9.999999999996668,
+      "V_right": -3.3333333333333335,
+      "M_right": 10.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -3.3333333333333335,
+      "M_left": 3.333333333333333e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 3.333333333333,
+    "M_jump": {
+     "x": 3.0,
+     "M_left": -10.0,
+     "M_right": 10.0
+    },
+    "deflection_min": {
+     "value_m": -0.0003608439182435161,
+     "x": 4.267949192431122,
+     "source": "closed-form"
+    },
+    "deflection_max_up": {
+     "value_m": 0.0003608439182435161,
+     "x": 1.7320508075688774
+    },
+    "slope_at_x0_rad": 0.0003125
+   }
+  },
+  {
+   "id": "SS-TRAP",
+   "description": "Simply supported, trapezoidal load 2 kN/m at A to 6 kN/m at B",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 0.0,
+     "x2": 6.0,
+     "w1": -2.0,
+     "w2": -6.0
+    }
+   ],
+   "formulas": {
+    "R": "W=(w1+w2)L/2, xbar=L(w1+2w2)/(3(w1+w2))",
+    "Mmax": "V=10-2x-x^2/3=0 -> x=-3+sqrt(39)",
+    "d_mid": "5*w1*L^4/(384EI) + 5*(w2-w1)*L^4/(768EI)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 10.0,
+       "exact": "10"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 14.0,
+       "exact": "14"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 10.0,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 6.0,
+      "V_left": -13.999999999994,
+      "M_left": 1.3999999999997e-11,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 13.999999999994,
+    "M_max": {
+     "value": 18.123315986119444,
+     "x": 3.2449979983983983
+    },
+    "deflection_min": {
+     "value_m": -0.00422066212,
+     "x": 3.05825,
+     "source": "exact solver + numeric root (not textbook closed-form)"
+    },
+    "slope_at_x0_rad": -0.002175
+   }
+  },
+  {
+   "id": "SS-UDL-part",
+   "description": "Simply supported, UDL 5 kN/m on [2,5]",
+   "L": 6.0,
+   "EI": 16000.0,
+   "supports": [
+    {
+     "id": "A",
+     "type": "pin",
+     "x": 0.0
+    },
+    {
+     "id": "B",
+     "type": "roller",
+     "x": 6.0
+    }
+   ],
+   "hinges": [],
+   "loads": [
+    {
+     "type": "distributed",
+     "x1": 2.0,
+     "x2": 5.0,
+     "w1": -5.0,
+     "w2": -5.0
+    }
+   ],
+   "formulas": {
+    "R": "R_B = W*xbar/L with W=15 at xbar=3.5",
+    "Mmax": "at x = a + R_A/w = 3.25: R_A*a + R_A^2/(2w)"
+   },
+   "expected": {
+    "reactions": {
+     "A": {
+      "Fy": {
+       "value": 6.25,
+       "exact": "25/4"
+      }
+     },
+     "B": {
+      "Fy": {
+       "value": 8.75,
+       "exact": "35/4"
+      }
+     }
+    },
+    "key_points": [
+     {
+      "x": 0.0,
+      "V_right": 6.25,
+      "M_right": 0.0,
+      "v": 0.0
+     },
+     {
+      "x": 2.0,
+      "V_left": 6.25,
+      "M_left": 12.49999999999375,
+      "V_right": 6.25,
+      "M_right": 12.5,
+      "v": -0.0030598958333333333
+     },
+     {
+      "x": 5.0,
+      "V_left": -8.749999999995,
+      "M_left": 8.75000000000875,
+      "V_right": -8.75,
+      "M_right": 8.75,
+      "v": -0.0018684895833333333
+     },
+     {
+      "x": 6.0,
+      "V_left": -8.75,
+      "M_left": 8.75e-12,
+      "v": 0.0
+     }
+    ],
+    "V_abs_max": 8.75,
+    "M_max": {
+     "value": 16.40625,
+     "x": 3.25
+    },
+    "deflection_min": {
+     "value_m": -0.00362982168,
+     "x": 3.0831,
+     "source": "exact solver + numeric root (not textbook closed-form)"
+    },
+    "slope_at_x0_rad": -0.0017903645833333333
+   }
+  }
+ ]
+}
