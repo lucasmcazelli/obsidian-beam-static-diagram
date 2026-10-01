@@ -116,4 +116,23 @@ describe('polyRootsInInterval', () => {
 		// and on a 1 cm segment
 		expectRoots(polyRootsInInterval(fromRoots([0.002, 0.007, 0.5]), 0, 0.01), [0.002, 0.007], 1e-15);
 	});
+
+	it.each([1e200, 1e-200, 1e300, 1e-300, 1e155, 1e-155])('does not depend on the magnitude of the coefficients (×%s)', (k) => {
+		// Regression: c1² overflowed (k = 1e200) or underflowed (k = 1e-200) in
+		// the quadratic formula, so the roots of k·(s - 1)(s - 4) came out wrong.
+		expectRoots(polyRootsInInterval(polyScale(fromRoots([1, 4]), k), 0, 5), [1, 4], 1e-12);
+		expectRoots(polyRootsInInterval(polyScale(fromRoots([2, 2]), k), 0, 5), [2], 1e-7);
+		expect(polyRootsInInterval(polyScale([1, 0, 1], k), -10, 10)).toEqual([]);
+		// Higher degrees recurse through the quadratic for their critical points.
+		expectRoots(polyRootsInInterval(polyScale(fromRoots([0.5, 1.5, 2.5, 3.5, 4.5]), k), 0, 5), [0.5, 1.5, 2.5, 3.5, 4.5], 1e-11);
+		expectRoots(polyRootsInInterval(polyScale([-2, 1], k), 0, 5), [2]);
+	});
+
+	it('gives exactly the same roots after scaling by a power of two (the normalisation is exact)', () => {
+		for (const p of [fromRoots([1, 4]), fromRoots([0.5, 1.5, 2.5, 3.5, 4.5]), fromRoots([1, 1 + 1e-6, 3, -2]), [-1, 1, 1e-20]]) {
+			const roots = polyRootsInInterval(p, 0, 5);
+			expect(polyRootsInInterval(polyScale(p, 2 ** 40), 0, 5)).toEqual(roots);
+			expect(polyRootsInInterval(polyScale(p, 2 ** -40), 0, 5)).toEqual(roots);
+		}
+	});
 });

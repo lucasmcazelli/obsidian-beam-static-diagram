@@ -53,8 +53,8 @@ export type UnitSystemId = 'kN-m' | 'N-mm' | 'kip-ft' | 'lb-in';
 /**
  * Physical dimension of a quantity. `sectionLength` and `deflection` are
  * lengths with their own default/display units (mm or in).
- * `stress` and `modulus` are both pressures but are displayed differently
- * (MPa vs GPa, ksi vs ksi).
+ * `stress` and `modulus` are both pressures but may use different display
+ * units (MPa and GPa in kN-m; the same unit in the other systems).
  */
 export type Dimension =
 	| 'length'
@@ -197,8 +197,11 @@ export interface BeamAst {
 	/** Second moment of area, e.g. "8000 cm^4". Overrides the section. */
 	I?: RawQuantity;
 	section?: AstSection;
-	/** Line numbers of single-valued statements, for error messages. */
-	lines: Partial<Record<'title' | 'units' | 'length' | 'material' | 'E' | 'I', number>>;
+	/**
+	 * Line numbers of the single-valued statements that model messages point
+	 * to. (Duplicate title and units lines are caught by the parser itself.)
+	 */
+	lines: Partial<Record<'length' | 'material' | 'E' | 'I', number>>;
 	/** Number of comment lines (the editor warns that saving drops them). */
 	commentCount: number;
 }
@@ -252,7 +255,10 @@ export interface MaterialPreset {
 	label: string;
 	/** Young's modulus [Pa]. */
 	E: number;
-	/** Where the value comes from, shown as a tooltip and in the README. */
+	/**
+	 * Where the value comes from. Documentation only: the plugin UI shows
+	 * `label`, not this text.
+	 */
 	source: string;
 }
 
@@ -315,9 +321,9 @@ export interface Segment {
 	V: Poly;
 	/** Bending moment M(s) [N·m], degree <= 3. */
 	M: Poly;
-	/** Slope theta(s) [rad], degree <= 4. Present only when E and I are known. */
+	/** Slope theta(s) [rad], degree <= 4. Present only when BeamResults.hasDeflection is true. */
 	theta?: Poly;
-	/** Deflection v(s) [m], degree <= 5. Present only when E and I are known. */
+	/** Deflection v(s) [m], degree <= 5. Present only when BeamResults.hasDeflection is true. */
 	v?: Poly;
 }
 
@@ -380,7 +386,10 @@ export interface BeamResults {
 	shearZeros: number[];
 	/** Global equilibrium residuals after solving: sum Fy [N] and sum Mz about x = 0 [N·m]. */
 	residual: { force: number; moment: number };
-	/** True when slope and deflection are available (E and I given). */
+	/**
+	 * True when slope and deflection are available: E and I given, and the
+	 * results within double-precision range (see solveBeam).
+	 */
 	hasDeflection: boolean;
 }
 
@@ -400,7 +409,12 @@ export interface DiagramSeries {
 /** How the bending moment diagram is oriented. */
 export type MomentConvention = 'sagging-up' | 'tension-side';
 
-/** Options shared by the analysis pipeline and the renderer. */
+/**
+ * Display preferences stored in the plugin settings (BeamStaticsSettings in
+ * settings.ts extends this with the UI-only results table switch). The
+ * renderer reads `decimals` and `momentConvention`; the analysis pipeline
+ * takes its own options (AnalyzeOptions in analyze.ts).
+ */
 export interface DisplayOptions {
 	/** Unit system used when a block has no `units` statement. */
 	defaultUnits: UnitSystemId;

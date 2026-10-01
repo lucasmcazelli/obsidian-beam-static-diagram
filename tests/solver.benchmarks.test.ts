@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { evaluateAt } from '../src/core/diagrams';
 import { polyRootsInInterval } from '../src/core/polynomial';
-import { computeNodalSolution, solveBeam } from '../src/core/solver';
+import { computeNodalSolution, solveBeam, UNSTABLE_MESSAGE } from '../src/core/solver';
 import { BeamAnalysisError } from '../src/core/types';
 import type { BeamModel, BeamResults, Load, SupportKind } from '../src/core/types';
 
@@ -495,7 +495,7 @@ describe('D) robustness', () => {
 		['two rollers closer than the merge tolerance', beam(5000, [['roller', 2000], ['roller', 2000.0000001]], [dist(0, 5000, -1)])],
 	])('mechanism: %s throws BeamAnalysisError', (_name, m) => {
 		expect(() => solveBeam(m)).toThrow(BeamAnalysisError);
-		expect(() => solveBeam(m)).toThrow('The beam is unstable: it can move as a mechanism. Add a support or remove a hinge.');
+		expect(() => solveBeam(m)).toThrow(UNSTABLE_MESSAGE);
 	});
 
 	it('supports and hinges very close together: accurate, or a clear error (never silent nonsense)', () => {
@@ -526,6 +526,58 @@ describe('D) robustness', () => {
 		const r = solveBeam(beam(5, [['pin', 0], ['roller', 5]], [point(5 - 1e-12, -10), point(2, -10)]));
 		expect(r.keyPoints).toEqual([0, 2, 5]);
 		expectRel(r.reactions[1]!.fy, 14);
+	});
+
+	it('a round-off reaction couple on a long beam is exactly 0 (couples are compared with 1e-12 of the load times L)', () => {
+		// Symmetric about the clamp at 1485 m (the overhang past the right roller
+		// is unloaded), so the clamp carries no couple. Its round-off, about
+		// 7e-6 N·m, used to survive: it is above 1e-12 of the load in newtons
+		// (1.5e-6) but far below 1e-12 of the load times L (4.4e-3 N·m).
+		const a = 1485;
+		const r = solveBeam(
+			beam(
+				2976.2,
+				[
+					['roller', 0],
+					['fixed', a],
+					['roller', 2 * a],
+				],
+				[dist(a - 1130, a + 1130, -654), point(a - 523, -1962), point(a + 523, -1962)],
+			),
+		);
+		expect(r.reactions[1]!.mz).toBe(0);
+		expectRel(r.reactions[0]!.fy, r.reactions[2]!.fy, 1e-9, 'symmetric rollers');
+		expectRel(r.reactions[0]!.fy + r.reactions[1]!.fy + r.reactions[2]!.fy, 654 * 2260 + 2 * 1962, 1e-10, 'sum of reactions');
+	});
+
+	it.each([
+		['E 1e-300 Pa (E·I = 8e-305)', 1e-300, 8e-5],
+		['I 1e-320 m^4 (E·I subnormal)', 200e9, 1e-320],
+	])('withholds a deflection that overflows double precision: %s', (_name, E, I) => {
+		// Regression: 1/EI overflowed, the extremes became NaN and the diagram
+		// read "zero deflection" with no warning.
+		const r = solveBeam({ ...beam(6, [['pin', 0], ['roller', 6]], [point(2, -10000)]), E, I });
+		expect(r.hasDeflection).toBe(false);
+		expect(r.segments.every((s) => s.theta === undefined && s.v === undefined)).toBe(true);
+		expect(r.extrema.deflectionMin).toBeUndefined();
+		expect(r.extrema.deflectionMax).toBeUndefined();
+		// The forces do not depend on EI and are still exact.
+		expectRel(r.reactions[0]!.fy, 20000 / 3);
+		expectRel(r.reactions[1]!.fy, 10000 / 3);
+		expectRel(r.extrema.momentMax.value, 40000 / 3);
+	});
+
+	it.each([1e-290, 1e-200, 1e200, 1e300])('keeps a huge or tiny but representable deflection exact: E = %s Pa', (E) => {
+		// Point load P at a = 2 on a 6 m simple span: max deflection
+		// P·a·(L² - a²)^(3/2) / (9·sqrt(3)·L·EI), in the longer part at
+		// sqrt((L² - a²)/3) from the far (right) support.
+		// E = 1e200 used to give a slope polynomial whose c1² overflowed in the
+		// root finder: the extreme came out 5 % low and at the wrong place.
+		const EI = E * 8e-5;
+		const r = solveBeam({ ...beam(6, [['pin', 0], ['roller', 6]], [point(2, -10000)]), E, I: 8e-5 });
+		expect(r.hasDeflection).toBe(true);
+		expectRel(r.extrema.deflectionMin!.value, (-10000 * 2 * 32 ** 1.5) / (9 * Math.sqrt(3) * 6 * EI), 1e-9, 'max deflection');
+		expectRel(r.extrema.deflectionMin!.x, 6 - Math.sqrt(32 / 3), 1e-9, 'its position');
 	});
 
 	it('beam without loads gives zero everywhere', () => {

@@ -166,6 +166,18 @@ describe('round trip: parse(serialize(ast)) equals ast', () => {
 		for (const ast of asts) expectRoundTrip(ast);
 	});
 
+	it('titles containing "#" and "//"', () => {
+		// Regression: "title Beam #1 (lab 2)" came back as "Beam", so the editor's form lost title text.
+		for (const title of ['Beam #1 (lab 2)', 'See https://example.com/beam', 'Beam C#', 'A // B', '#1']) {
+			const ast: BeamAst = { ...emptyAst(), title, length: '6' };
+			const again = parseBeamSource(serializeBeamAst(ast));
+			expect(again.diagnostics, title).toEqual([]);
+			expect(again.ast.title, title).toBe(title);
+			expect(again.ast.commentCount, title).toBe(0);
+			expectRoundTrip(ast);
+		}
+	});
+
 	it('randomly generated ASTs', () => {
 		// Deterministic linear congruential generator so failures are reproducible.
 		let seed = 2024;
@@ -218,7 +230,7 @@ describe('round trip: parse(serialize(ast)) equals ast', () => {
 		for (let n = 0; n < 300; n++) {
 			const ast: BeamAst = {
 				...emptyAst(),
-				title: maybe(pick(['A', 'Beam one', 'Test: 2,5 kN @ mid'])),
+				title: maybe(pick(['A', 'Beam one', 'Test: 2,5 kN @ mid', 'Beam #2 // draft'])),
 				units: pick(units),
 				length: maybe(pick(quantities)),
 				supports: Array.from({ length: Math.floor(rand() * 4) }, () => ({

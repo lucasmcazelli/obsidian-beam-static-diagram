@@ -16,10 +16,11 @@
  *   are redundant restraints: their number is the degree of indeterminacy.
  */
 import { matrixRank } from './linalg';
+import { POSITION_TOL } from './tolerances';
 import type { BeamModel, Classification } from './types';
 
-/** Relative position tolerance (fraction of L) used to match supports with hinges. */
-const POSITION_TOL = 1e-9;
+// POSITION_TOL (tolerances.ts, a fraction of L) matches supports with hinges,
+// the same tolerance the solver uses to merge key points.
 
 /** Absolute rank tolerance: matrix entries are 0, ±1 or ±x/L, all of order 1. */
 const RANK_TOL = 1e-9;

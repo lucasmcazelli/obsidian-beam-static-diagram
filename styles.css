@@ -17,6 +17,10 @@
  * To restyle the drawings, override the --bsd-* tokens in a CSS snippet:
  *
  *   .bsd-block { --bsd-load: var(--color-orange); --bsd-area-opacity: 0.3; }
+ *
+ * --bsd-paper is the colour behind the drawing. Support and hinge fills and
+ * the halos around labels use it, so a block placed on a coloured background
+ * (a callout, a custom container) should set it to that background.
  */
 
 /* ==========================================================================
@@ -26,6 +30,7 @@
 /* Scoped to .bsd-block, the container of one beam block (the editor's
  * preview is a .bsd-block too, so it picks these up as well). */
 .bsd-block {
+	--bsd-paper: var(--background-primary);
 	--bsd-ink: var(--text-normal);
 	--bsd-muted: var(--text-muted);
 	--bsd-faint: var(--text-faint);
@@ -35,6 +40,16 @@
 	--bsd-neg: var(--color-red);
 	--bsd-deflection: var(--color-purple);
 	--bsd-area-opacity: 0.22;
+}
+
+/* Callouts paint rgba(var(--callout-color), 0.1) over the page, so the same
+ * mix keeps label halos and support fills from showing as pale stickers.
+ * Guarded because an unsupported color-mix() would make every var(--bsd-paper)
+ * invalid, and an invalid fill falls back to black. */
+@supports (color: color-mix(in srgb, red 10%, blue)) {
+	.callout .bsd-block {
+		--bsd-paper: color-mix(in srgb, rgb(var(--callout-color)) 10%, var(--background-primary));
+	}
 }
 
 /* ==========================================================================
@@ -64,9 +79,9 @@
 }
 
 /* Support triangles, roller wheels and clamp blocks are filled with the
- * page background so lines behind them do not show through. */
+ * paper colour so lines behind them do not show through. */
 .bsd-block .bsd-support {
-	fill: var(--background-primary);
+	fill: var(--bsd-paper);
 	stroke: var(--bsd-ink);
 	stroke-width: 1.5px;
 	stroke-linejoin: round;
@@ -87,7 +102,7 @@
 
 /* A hinge is an open circle on the beam axis. */
 .bsd-block .bsd-hinge {
-	fill: var(--background-primary);
+	fill: var(--bsd-paper);
 	stroke: var(--bsd-ink);
 	stroke-width: 1.5px;
 }
@@ -100,6 +115,18 @@
 	stroke-linecap: round;
 	stroke-linejoin: round;
 	fill: none;
+}
+
+/* Point loads are drawn heavier than the arrows of distributed loads (their
+ * heads are larger too, see POINT_HEAD_LEN in beam-scene.ts), so a point load
+ * inside a distributed load still stands out. */
+.bsd-block .bsd-load.bsd-point {
+	stroke-width: 2.25px;
+}
+
+/* Thin line from a point-load label in a higher row down to its arrow. */
+.bsd-block .bsd-load.bsd-leader {
+	stroke-width: 1px;
 }
 
 /* Arrowheads are small filled polygons (no SVG markers: they would need ids). */
@@ -144,14 +171,14 @@
 /* --- Text labels ---
  * Font sizes match LAYOUT.fontSize (11px) and LAYOUT.smallFontSize (10px) in
  * src/render/scene.ts, which the label placement relies on. Labels that can
- * sit on top of curves or fills get a halo in the page background colour
- * (paint-order draws the stroke first) so they stay readable. */
+ * sit on top of curves or fills get a halo in the paper colour (paint-order
+ * draws the stroke first) so they stay readable. */
 .bsd-block .bsd-load-label,
 .bsd-block .bsd-reaction-label,
 .bsd-block .bsd-value,
 .bsd-block .bsd-dim-label {
 	paint-order: stroke;
-	stroke: var(--background-primary);
+	stroke: var(--bsd-paper);
 	stroke-width: 3px;
 	stroke-linejoin: round;
 }
@@ -161,8 +188,15 @@
 	font-size: 11px;
 }
 
+/* Reaction values are key results, and the theme green is too light for
+ * 11 px text on a light background (about 2.6:1). The text is green mixed
+ * half and half with the ink colour (about 6:1 with Obsidian's default light
+ * colours, above 5:1 when printed); the arrows stay pure green. The plain
+ * ink line comes first for older iOS WebViews without color-mix(), which
+ * drop the second declaration. */
 .bsd-block .bsd-reaction-label {
-	fill: var(--bsd-reaction);
+	fill: var(--bsd-ink);
+	fill: color-mix(in srgb, var(--bsd-reaction) 50%, var(--bsd-ink));
 	font-size: 11px;
 }
 
@@ -289,11 +323,17 @@
 	opacity: 1;
 }
 
-/* Touch screens cannot hover: keep the button visible there. */
+/* Touch screens cannot hover: keep the button visible there. Obsidian sets
+ * .is-mobile on phones and tablets, which also covers a tablet whose
+ * trackpad makes it report hover support. */
 @media (hover: none) {
 	.bsd-toolbar {
 		opacity: 1;
 	}
+}
+
+.is-mobile .bsd-toolbar {
+	opacity: 1;
 }
 
 .bsd-toolbar-button {
@@ -304,25 +344,33 @@
 	box-shadow: none;
 }
 
+/* A larger touch target on phones and tablets. */
+.is-mobile .bsd-toolbar-button {
+	padding: var(--size-4-2);
+}
+
 .bsd-title {
 	margin-bottom: var(--size-4-2);
 	/* Centred and padded so the edit button never covers it. */
 	padding: 0 var(--size-4-8);
 	text-align: center;
 	font-weight: var(--font-semibold);
+	/* User text, which can be one long unbroken word: wrap it instead of
+	 * widening the block past the note. */
+	overflow-wrap: anywhere;
 }
 
 /* --- Errors and warnings --- */
 
+/* Messages are prose in the normal text colour; the red heading and border
+ * mark the box as an error, and only quoted source lines are monospace. */
 .bsd-error {
 	margin: var(--size-4-2) 0;
 	padding: var(--size-4-2);
 	border: 1px solid var(--background-modifier-error);
 	border-radius: var(--radius-s);
-	color: var(--text-error);
-	font-family: var(--font-monospace);
+	color: var(--text-normal);
 	font-size: var(--font-ui-small);
-	white-space: pre-wrap;
 }
 
 /* In a note the edit button sits over the top left corner of the error box. */
@@ -331,6 +379,7 @@
 }
 
 .bsd-error-heading {
+	color: var(--text-error);
 	font-weight: var(--font-semibold);
 }
 
@@ -351,18 +400,23 @@
 	overflow-wrap: anywhere;
 }
 
-/* The offending source line, under its message. */
+/* The offending source line, under its message, spacing kept as typed. */
 .bsd-error-source {
 	display: block;
 	margin-top: var(--size-2-1);
 	color: var(--text-muted);
 	background: none;
+	font-family: var(--font-monospace);
+	white-space: pre-wrap;
 }
 
+/* Warning text in the normal colour (the theme orange is about 3:1 on a
+ * light background); the orange bar marks them as warnings. */
 .bsd-warnings {
 	margin: var(--size-4-2) 0;
 	padding-left: var(--size-4-5);
-	color: var(--text-warning);
+	border-left: 3px solid var(--text-warning);
+	color: var(--text-normal);
 	font-size: var(--font-ui-small);
 }
 
@@ -400,9 +454,10 @@
 	text-align: right;
 }
 
+/* Muted rather than faint: it is a safety note and must stay readable. */
 .bsd-disclaimer {
 	margin-top: var(--size-4-1);
-	color: var(--text-faint);
+	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 }
 
@@ -582,9 +637,12 @@
 
 @media print {
 	/* Theme text colours can be very light (or white in a dark theme): never
-	 * print light grey on white paper. These fixed greys are the only
-	 * colours not taken from the theme. */
+	 * print light grey on white paper. These fixed greys and the white paper
+	 * are the only colours not taken from the theme; the paper must be fixed
+	 * too, or supports, hinges and label halos would print in a dark
+	 * theme's background colour. */
 	.bsd-block {
+		--bsd-paper: #fff;
 		--bsd-ink: #222;
 		--bsd-muted: #555;
 		--bsd-faint: #999;
@@ -593,6 +651,13 @@
 	/* The edit button does nothing on paper. */
 	.bsd-toolbar {
 		display: none;
+	}
+
+	/* In a callout the paper is the callout tint over white. */
+	@supports (color: color-mix(in srgb, red 10%, blue)) {
+		.callout .bsd-block {
+			--bsd-paper: color-mix(in srgb, rgb(var(--callout-color)) 10%, #fff);
+		}
 	}
 
 	/* Keep each drawing and the table on one page. */

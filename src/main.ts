@@ -32,6 +32,12 @@ export default class BeamStaticsPlugin extends Plugin {
 		this.registerMarkdownCodeBlockProcessor('beam', (source, el, ctx) => {
 			ctx.addChild(new BeamBlockRenderChild(el, this, source, ctx));
 		});
+		// Those render children belong to each note's renderer, not to the plugin, so Obsidian does
+		// not unload them when the plugin is disabled or updated: stop their observers and edit
+		// buttons here (each block unregisters itself as it unloads, hence the copy).
+		this.register(() => {
+			for (const block of [...this.blocks]) block.retire();
+		});
 
 		this.addSettingTab(new BeamStaticsSettingTab(this.app, this));
 
@@ -61,9 +67,18 @@ export default class BeamStaticsPlugin extends Plugin {
 		this.settings = normalizeSettings(await this.loadData());
 	}
 
-	/** Saves the settings and redraws open blocks. */
-	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+	/**
+	 * data.json changed on disk (Obsidian Sync, another device or program):
+	 * reload and redraw. Without this, open blocks would keep the old values,
+	 * and the next change in the settings tab would save the stale object over
+	 * the synced one. The settings tab reads `this.settings` on every render,
+	 * so replacing the object is safe.
+	 *
+	 * (There is no saveSettings: the declarative settings tab persists values
+	 * itself, see BeamStaticsSettingTab.setControlValue.)
+	 */
+	async onExternalSettingsChange(): Promise<void> {
+		await this.loadSettings();
 		this.refreshBlocks();
 	}
 

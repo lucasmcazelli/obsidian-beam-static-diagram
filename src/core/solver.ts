@@ -2,12 +2,10 @@
  * Beam solver: direct stiffness method for the unknowns, then exact
  * piecewise polynomials for V, M, slope and deflection.
  *
- * Why our own engine: no maintained, correct and small JavaScript beam
- * library exists. beamsjs gives wrong continuous-beam reactions and pulls in
- * all of mathjs (about 1 MB); @jtgtools/xbeam is a few months old, does not
- * detect mechanisms and silently returns nonsense; WASM solvers weigh several
- * MB and are freemium. A zero-dependency direct stiffness solver is about
- * 5 KB and every step can be explained, so that is what this file is.
+ * Why our own engine: zero dependencies and a few KB minified, mechanisms
+ * are detected explicitly (stability.ts) instead of surfacing as a singular
+ * matrix, and every step below can be checked against a hand calculation
+ * (tests/solver.benchmarks.test.ts compares the results with closed forms).
  *
  * Steps (straight, prismatic Euler-Bernoulli beam):
  * 1. Prepare: merge positions closer than 1e-9·L into "key points" so that
@@ -21,36 +19,51 @@
  * 4. With the reactions known the beam is statically determinate, so V and M
  *    come from a statics sweep (method of sections) as exact polynomials.
  * 5. When E and I are known, slope and deflection are obtained by
- *    integrating M / EI along the beam from the DSM values at x = 0.
+ *    integrating M / EI along the beam from the DSM values at x = 0. They
+ *    are withheld (hasDeflection false) if they overflow double precision.
  *
  * Sign convention: see types.ts (forces and q up, couples counter-clockwise,
  * M sagging positive, v up, theta counter-clockwise).
  */
-import { computeExtrema, findShearZeros, POSITION_TOL } from './diagrams';
+import { computeExtrema, findShearZeros } from './diagrams';
 import { SingularMatrixError, solveLinearSystem } from './linalg';
 import { polyEval, polyIntegrate, polyScale } from './polynomial';
 import { classifyBeam } from './stability';
+import { POSITION_TOL, RESIDUAL_TOL } from './tolerances';
 import { BeamAnalysisError } from './types';
 import type { BeamModel, BeamResults, Poly, Reaction, Segment, SupportKind } from './types';
 
-/** Message shown when the support layout allows rigid-body motion. */
-const UNSTABLE_MESSAGE = 'The beam is unstable: it can move as a mechanism. Add a support or remove a hinge.';
+/**
+ * Message shown when the support layout allows rigid-body motion. It is the
+ * only copy: analyzeBeam passes the BeamAnalysisError message through.
+ */
+export const UNSTABLE_MESSAGE = 'The beam is unstable: it can move as a mechanism. Add a support or remove a hinge';
 
 /** Message shown when the geometry is too extreme for an accurate solution. */
 const TOO_CLOSE_MESSAGE =
 	'The beam could not be solved accurately: some supports or hinges are too close together. Move them apart or put them at the same position';
 
-/** Reactions below this fraction of the total applied load are round-off and set to exactly 0. */
+/**
+ * Reaction forces below this fraction of the total applied load, and
+ * reaction couples below this fraction of the load times L, are round-off
+ * and set to exactly 0.
+ */
 const REACTION_ZERO_TOL = 1e-12;
 
 /**
- * Largest accepted equilibrium residual, as a fraction of the total load plus
- * reactions. Healthy beams stay near 1e-15; only extreme geometry (a hinge a
- * few micrometres from a support, where an element is so short that its
- * shear is lost in round-off) gets close to this, and then we refuse to
- * answer rather than show wrong numbers.
+ * Largest slope [rad] or deflection [m] magnitude the solver returns. It is
+ * far below Number.MAX_VALUE (about 1.8e308) so that later steps (unit
+ * conversion, where m to mm is ×1000, root finding on derivatives, chart
+ * scaling) cannot overflow either. Only an absurd E·I gets near it (about
+ * 1e-295 N·m² for a 10 kN load on a 6 m span; no unit mistake comes close).
  */
-const RESIDUAL_TOL = 1e-6;
+const MAX_DEFLECTION_MAGNITUDE = 1e300;
+
+// RESIDUAL_TOL (tolerances.ts) is the largest accepted equilibrium residual,
+// as a fraction of the total load plus reactions. Healthy beams stay near
+// 1e-15; only extreme geometry (a hinge a few micrometres from a support,
+// where an element is so short that its shear is lost in round-off) gets
+// close to it, and then we refuse to answer rather than show wrong numbers.
 
 /** 3-point Gauss-Legendre rule on [-1, 1]: exact for polynomials up to degree 5. */
 const GAUSS_POINTS = [-Math.sqrt(3 / 5), 0, Math.sqrt(3 / 5)];
@@ -63,7 +76,10 @@ const GAUSS_WEIGHTS = [5 / 9, 8 / 9, 5 / 9];
 /**
  * Solves a validated model. Throws BeamAnalysisError (from ./types) when the
  * beam is a mechanism. When E or I is missing, reactions, V and M are still
- * exact (prismatic beam) and `hasDeflection` is false.
+ * exact (prismatic beam) and `hasDeflection` is false. `hasDeflection` is
+ * also false when E and I are given but out of double-precision range (E·I
+ * itself overflows, or it is so small that the deflection would); the
+ * caller can tell the two cases apart by checking model.E and model.I.
  */
 export function solveBeam(model: BeamModel): BeamResults {
 	const beam = prepare(model);
@@ -77,7 +93,10 @@ export function solveBeam(model: BeamModel): BeamResults {
 	const segments = buildSegments(beam, reactions);
 
 	const EI = bendingStiffness(model);
-	if (EI !== undefined) integrateDeflection(beam, dsm, segments, EI);
+	// False without a usable E·I, and also when E·I is so small that the
+	// deflection overflows: the forces are still right, only theta and v are
+	// withheld (see integrateDeflection).
+	const hasDeflection = EI !== undefined && integrateDeflection(beam, dsm, segments, EI);
 
 	// Bending stress needs the section's extreme fibre distance c; I is the
 	// value used for the analysis (an explicit `I` overrides the section).
@@ -94,7 +113,7 @@ export function solveBeam(model: BeamModel): BeamResults {
 		extrema: computeExtrema(segments, sectionModulus),
 		shearZeros: findShearZeros(segments),
 		residual,
-		hasDeflection: EI !== undefined,
+		hasDeflection,
 	};
 }
 
@@ -477,7 +496,10 @@ function runStiffness(beam: PreparedBeam): StiffnessResult {
  * When two supports share a node (closer than the merge tolerance) the
  * split between them is statically indeterminate; the whole reaction is
  * reported on the first one and 0 on the other.
- * Reactions at round-off level (below 1e-12 of the total load) become 0.
+ * Reactions at round-off level become 0: forces below 1e-12 of the total
+ * load, couples below 1e-12 of the total load times L (the same force-to-
+ * couple scaling as checkResidual, so the threshold keeps its meaning on
+ * long beams, where the round-off in a couple grows with L).
  */
 function collectReactions(beam: PreparedBeam, dsm: StiffnessResult): Reaction[] {
 	const { K, F, u } = dsm;
@@ -487,8 +509,9 @@ function collectReactions(beam: PreparedBeam, dsm: StiffnessResult): Reaction[] 
 		for (let j = 0; j < row.length; j++) s += row[j]! * u[j]!;
 		return s;
 	};
-	const zero = REACTION_ZERO_TOL * totalLoad(beam);
-	const clean = (v: number): number => (Math.abs(v) <= zero ? 0 : v);
+	const zeroForce = REACTION_ZERO_TOL * totalLoad(beam);
+	const zeroCouple = zeroForce * beam.L;
+	const clean = (v: number, zero: number): number => (Math.abs(v) <= zero ? 0 : v);
 
 	const forceTaken = new Set<number>();
 	const coupleTaken = new Set<number>();
@@ -506,7 +529,7 @@ function collectReactions(beam: PreparedBeam, dsm: StiffnessResult): Reaction[] 
 			mz = restraintForce(dsm.thL[n]!);
 			if (dsm.thR[n] !== dsm.thL[n]) mz += restraintForce(dsm.thR[n]!);
 		}
-		return { supportIndex: s.index, kind: s.kind, x: s.x, fy: clean(fy), mz: clean(mz) };
+		return { supportIndex: s.index, kind: s.kind, x: s.x, fy: clean(fy, zeroForce), mz: clean(mz, zeroCouple) };
 	});
 }
 
@@ -615,11 +638,21 @@ function buildSegments(beam: PreparedBeam, reactions: Reaction[]): Segment[] {
  * (the system was solved with EI = 1). Deflection is continuous everywhere;
  * the slope jumps at a hinge, so it restarts there from the DSM rotation of
  * the element on the right (thR). Degrees: theta <= 4, v <= 5.
+ *
+ * Returns true on success. Returns false, and removes theta and v from
+ * every segment, when a slope or deflection is not finite or could exceed
+ * MAX_DEFLECTION_MAGNITUDE (see polyBound). That takes an absurdly small
+ * but positive EI, such as "E 1e-300 Pa": 1/EI overflows and the values
+ * become Infinity or NaN. Left in place, NaN extremes would read as "zero
+ * deflection" in the diagram and the table with no warning, a silent wrong
+ * result. Without theta and v, computeExtrema skips the deflection and the
+ * caller reports it as unavailable instead.
  */
-function integrateDeflection(beam: PreparedBeam, dsm: StiffnessResult, segments: Segment[], EI: number): void {
+function integrateDeflection(beam: PreparedBeam, dsm: StiffnessResult, segments: Segment[], EI: number): boolean {
 	const nodeOfKey = new Map<number, number>(dsm.nodeKeys.map((k, i) => [k, i]));
 	let theta0 = dsm.u[dsm.thR[0]!]! / EI;
 	let v0 = dsm.u[dsm.vDof[0]!]! / EI;
+	let representable = true;
 	segments.forEach((seg, i) => {
 		if (i > 0 && beam.hingeKeys.has(i)) theta0 = dsm.u[dsm.thR[nodeOfKey.get(i)!]!]! / EI;
 		const theta = polyIntegrate(polyScale(seg.M, 1 / EI), theta0);
@@ -627,9 +660,41 @@ function integrateDeflection(beam: PreparedBeam, dsm: StiffnessResult, segments:
 		seg.theta = theta;
 		seg.v = v;
 		const len = seg.x1 - seg.x0;
+		// The start values are the constant coefficients, so a bad marched
+		// value fails the next segment's bound; the last segment's bound
+		// covers its own end value.
+		if (!(polyBound(theta, len) <= MAX_DEFLECTION_MAGNITUDE && polyBound(v, len) <= MAX_DEFLECTION_MAGNITUDE)) {
+			representable = false;
+		}
 		theta0 = polyEval(theta, len);
 		v0 = polyEval(v, len);
 	});
+	if (!representable) {
+		for (const seg of segments) {
+			delete seg.theta;
+			delete seg.v;
+		}
+	}
+	return representable;
+}
+
+/**
+ * Upper bound of |p(s)| for s in [0, len]: sum of |c_i|·r^i with
+ * r = max(1, len). It also bounds every partial result of Horner's rule
+ * (polyEval) on that interval, so no evaluation there can exceed it (or
+ * overflow while it is finite). NaN or Infinity when a coefficient is NaN
+ * or infinite.
+ */
+function polyBound(p: Poly, len: number): number {
+	const r = Math.max(1, len);
+	let bound = 0;
+	let power = 1;
+	for (const c of p) {
+		// Skip zeros: 0 × Infinity would be NaN if r^i ever overflowed.
+		if (c !== 0) bound += Math.abs(c) * power;
+		power *= r;
+	}
+	return bound;
 }
 
 // ---------------------------------------------------------------------------

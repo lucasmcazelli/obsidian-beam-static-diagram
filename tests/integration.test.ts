@@ -104,7 +104,11 @@ describe('styles.css and the renderer agree', () => {
 
 	it('takes colours from theme variables outside the print section', () => {
 		const screen = CSS.slice(0, CSS.indexOf('@media print'));
-		expect(screen).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+		// rgb() is allowed only around a theme variable: Obsidian's --callout-color is an
+		// "r, g, b" triple that nothing but rgb() can consume. Literal colours still fail.
+		expect(screen).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\((?!\s*var\(--)|hsla?\(/i);
+		expect(screen).toMatch(/rgb\(var\(--callout-color\)\)/);
+		expect('color: rgb(0, 0, 0)').toMatch(/#[0-9a-f]{3,8}\b|rgba?\((?!\s*var\(--)|hsla?\(/i);
 		expect(CSS).not.toContain('!important');
 	});
 });
@@ -156,6 +160,7 @@ describe('follow-on messages of a broken line', () => {
 		expect(guessStatementType('rolelr')).toBe('roller');
 		expect(guessStatementType('point')).toBe('point');
 		expect(guessStatementType('e')).toBe('E');
+		expect(guessStatementType('Ix')).toBe('I');
 		expect(guessStatementType('zzzzzz')).toBeUndefined();
 	});
 
@@ -164,6 +169,9 @@ describe('follow-on messages of a broken line', () => {
 		expect(messages('lenght 6 m\npin at 0\nroller at end')).not.toContain(MISSING_LENGTH_MESSAGE);
 		expect(messages('length 6 m\nrolelr at 0')).not.toContain(MISSING_SUPPORT_MESSAGE);
 		expect(messages('length 6 m\npin at 0\nroller at end\nmaterial steel\nsectoin rect 1 x 2')).not.toContain(INCOMPLETE_STIFFNESS_MESSAGE);
+		// The "EI" hint counts as a broken stiffness line, the "free" hint as no statement at all.
+		expect(messages('length 6 m\npin at 0\nroller at end\nmaterial steel\nEI 16000 kNm2')).not.toContain(INCOMPLETE_STIFFNESS_MESSAGE);
+		expect(messages('length 6 m\nfree at end')).toContain(MISSING_SUPPORT_MESSAGE);
 		// A broken load line does not explain a missing length or support.
 		const unrelated = messages('pointt 10 at 2');
 		expect(unrelated).toContain(MISSING_LENGTH_MESSAGE);

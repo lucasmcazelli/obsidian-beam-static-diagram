@@ -5,19 +5,7 @@
  * strings are ever parsed, so user text in labels (titles, units) can never
  * be interpreted as HTML or SVG.
  */
-import type { Prim, Scene } from '../render/scene';
-
-/**
- * Attribute names that are never copied from a scene. Scenes are built by our
- * own code and never contain these, but refusing them here keeps the mount
- * step safe even if a future scene builder passes user text through: inline
- * styles would bypass the theme classes, and `on*` / `href` attributes could
- * run script.
- */
-function isForbiddenAttribute(name: string): boolean {
-	const lower = name.toLowerCase();
-	return lower === 'style' || lower.startsWith('on') || lower === 'href' || lower === 'xlink:href';
-}
+import { isForbiddenAttribute, type Prim, type Scene } from '../render/scene';
 
 /** Copies a primitive's attributes, skipping forbidden names and non-finite numbers. */
 function primAttributes(prim: Prim): Record<string, string | number> {

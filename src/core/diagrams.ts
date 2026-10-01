@@ -6,14 +6,16 @@
  * stationary points (roots of the derivative), not from the samples.
  */
 import { polyEval, polyRootsInInterval } from './polynomial';
-import type { DiagramQuantity, DiagramSeries, Extrema, Extremum, Poly, Segment } from './types';
+import { POSITION_TOL } from './tolerances';
+import type { BeamResults, DiagramQuantity, DiagramSeries, Extrema, Extremum, Poly, Segment } from './types';
 
 /**
- * Relative position tolerance (fraction of the beam length). Positions closer
- * than this are the same point: the solver merges key points with it and
- * evaluateAt uses it to recognise a key point.
+ * Relative position tolerance (fraction of the beam length), defined once in
+ * tolerances.ts. Positions closer than this are the same point: the solver
+ * merges key points with it and evaluateAt uses it to recognise a key point.
+ * Re-exported for existing callers.
  */
-export const POSITION_TOL = 1e-9;
+export { POSITION_TOL };
 
 /** Values below this fraction of the quantity's scale are round-off and reported as exactly 0. */
 const ZERO_TOL = 1e-12;
@@ -177,6 +179,78 @@ export function evaluateAt(segments: Segment[], quantity: SegmentField, x: numbe
 		if (x < seg.x1) return polyEval(polyOf(seg, quantity), Math.max(0, x - seg.x0));
 	}
 	return polyEval(polyOf(last, quantity), last.x1 - last.x0);
+}
+
+/** The part of the beam whose deflection-to-length ratio is the worst (see governingDeflectionRatio). */
+export interface DeflectionRatio {
+	/** Region length / peak |deflection| in the region. Smaller is worse. */
+	ratio: number;
+	/** 'span' between two supports, or 'cantilever' from a support to a free end. */
+	kind: 'span' | 'cantilever';
+	/** Region bounds [m]; length = x1 - x0. */
+	x0: number;
+	x1: number;
+	/** Largest |deflection| in the region [m] and where it occurs. */
+	peak: number;
+	x: number;
+}
+
+/**
+ * The span or cantilever with the smallest length / deflection ratio, the
+ * figure serviceability limits (L/250, L/360) are checked against. Undefined
+ * without deflection results or when nothing deflects.
+ *
+ * The beam is cut at its ends and at every support strictly inside it. A
+ * region between two supports is a span; a region ending at a free end is a
+ * cantilever, measured with its own length (stricter than the 2 × length
+ * that some codes allow for cantilevers). Each region is checked on its own,
+ * because the worst ratio is often not at the largest deflection: a 1 m
+ * overhang dropping 3.3 mm (L/299) fails L/360 although the 6 m span next to
+ * it deflects more (7.5 mm, L/801). Dividing the total length by the largest
+ * deflection would also flatter multi-span beams (three 4 m spans would only
+ * reach "L/50" at span/16.7).
+ *
+ * Hinges do not cut regions: in a Gerber beam the ratio uses the distance
+ * between the supports on either side of the hinge.
+ *
+ * The results table and the large-deflection warning in analyze.ts both use
+ * it, so they always quote the same ratio.
+ */
+export function governingDeflectionRatio(results: BeamResults): DeflectionRatio | undefined {
+	if (!results.hasDeflection) return undefined;
+	const { deflectionMax, deflectionMin } = results.extrema;
+	const globalPeak = Math.max(Math.abs(deflectionMax?.value ?? 0), Math.abs(deflectionMin?.value ?? 0));
+	if (!(globalPeak > 0) || !Number.isFinite(globalPeak)) return undefined;
+
+	const length = results.model.length;
+	const tol = POSITION_TOL * length;
+	const supportXs = results.model.supports.map((s) => s.x);
+	const isSupport = (x: number): boolean => supportXs.some((sx) => Math.abs(sx - x) <= tol);
+	const bounds = [0, ...supportXs.filter((x) => x > tol && x < length - tol), length];
+
+	let worst: DeflectionRatio | undefined;
+	for (let i = 0; i + 1 < bounds.length; i++) {
+		const lo = bounds[i] ?? 0;
+		const hi = bounds[i + 1] ?? length;
+		if (hi - lo <= tol) continue;
+		// Segments always break at supports, so each region is a whole number of segments.
+		const segments = results.segments.filter((seg) => seg.x0 >= lo - tol && seg.x1 <= hi + tol);
+		if (segments.length === 0) continue;
+		const extrema = computeExtrema(segments);
+		const down = extrema.deflectionMin;
+		const up = extrema.deflectionMax;
+		if (!down || !up) continue;
+		const pick = Math.abs(down.value) >= Math.abs(up.value) ? down : up;
+		const peak = Math.abs(pick.value);
+		// computeExtrema scales its round-off cleanup to the region, so judge "no deflection" against the whole beam.
+		if (peak <= ZERO_TOL * globalPeak) continue;
+		const ratio = (hi - lo) / peak;
+		// Ties (symmetric spans, equal up to round-off) keep the leftmost, like computeExtrema.
+		if (!worst || ratio < worst.ratio * (1 - TIE_TOL)) {
+			worst = { ratio, kind: isSupport(lo) && isSupport(hi) ? 'span' : 'cantilever', x0: lo, x1: hi, peak, x: pick.x };
+		}
+	}
+	return worst;
 }
 
 // ---------------------------------------------------------------------------

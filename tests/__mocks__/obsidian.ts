@@ -59,7 +59,11 @@ export class Component {
 		this.register(() => el.removeEventListener(type, callback, options));
 	}
 
-	registerEvent(): void {}
+	/** Keeps the event refs so tests can check what was registered; the real one detaches them on unload. */
+	readonly eventRefs: unknown[] = [];
+	registerEvent(ref: unknown): void {
+		this.eventRefs.push(ref);
+	}
 }
 
 export class MarkdownRenderChild extends Component {

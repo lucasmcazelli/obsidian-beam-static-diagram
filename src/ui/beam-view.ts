@@ -7,14 +7,26 @@
  * parses markup strings, so every piece of user text is inserted as plain text.
  */
 import { analyzeBeam } from '../core/analyze';
-import { emptyAst } from '../core/parser';
+import { governingDeflectionRatio } from '../core/diagrams';
+import { emptyAst, splitLines } from '../core/parser';
+import { POSITION_TOL } from '../core/tolerances';
 import type { AnalysisOutput, BeamResults, Diagnostic, Dimension, Extremum, UnitSystemId } from '../core/types';
-import { formatCompact, formatNumber, formatQuantity, toDisplay, unitSymbol } from '../core/units';
+import {
+	clampDecimals,
+	formatNumber,
+	formatQuantity,
+	formatSignificant,
+	formatSpanRatio,
+	TABLE_PLAIN_LIMIT,
+	toDisplay,
+	UNIT_SYSTEMS,
+	unitSymbol,
+} from '../core/units';
 import { buildBeamScene } from '../render/beam-scene';
 import { buildDiagramScene } from '../render/chart-scene';
-import { supportName } from '../render/draw';
+import { formatResultPosition, supportName } from '../render/draw';
 import type { SceneOptions } from '../render/scene';
-import { clampDecimals, type BeamStaticsSettings } from '../settings';
+import type { BeamStaticsSettings } from '../settings';
 import { mountScene } from './mount';
 
 /** Footer shown under every solved beam. */
@@ -43,9 +55,6 @@ export function analyzeSafely(source: string, defaultUnits: UnitSystemId, decima
 	}
 }
 
-/** Letter name of a support (A, B, ...), shared with the drawing's tooltips. Re-exported for the UI tests. */
-export { supportName };
-
 /** "Line 3: message", or just the message for whole-beam problems. */
 export function diagnosticText(d: Diagnostic): string {
 	return d.line === undefined ? d.message : `Line ${d.line}: ${d.message}`;
@@ -63,17 +72,26 @@ function showsAsZero(text: string): boolean {
 }
 
 /**
- * Formats an input property (E, I) compactly: up to 3 decimals without
- * trailing zeros ("200 GPa", "6666.667 cm⁴"), switching to exponent form for
- * very large or very small numbers ("6.67e7 mm⁴"), so typed values are shown
- * as typed rather than padded to the results' decimal places.
+ * An input property (E, I) in display units with 4 significant digits
+ * (formatSignificant: plain decimals down to 1e-4, exponent form below that
+ * and from 1e7 up): "200 GPa", "7999 cm⁴".
+ *
+ * `presetDigits` rounds further first, for values that come from a material
+ * preset rather than from the user: presets store one SI value (steel
+ * 200 GPa), which converts to 29007.5 ksi, more precision than the preset's
+ * source has. Three digits read like the handbooks (29000 ksi, aluminium
+ * 9990 ksi, SI still 200 GPa); the analysis keeps the stored SI value.
  */
-function formatProperty(valueSI: number, dimension: Dimension, units: UnitSystemId): string {
-	const value = toDisplay(valueSI, dimension, units);
-	const abs = Math.abs(value);
-	const text = abs >= 1e7 || (abs > 0 && abs < 1e-3) ? formatNumber(value, 2) : formatCompact(value, 3);
-	return `${text} ${unitSymbol(dimension, units)}`;
+function formatProperty(valueSI: number, dimension: Dimension, units: UnitSystemId, presetDigits?: number): string {
+	const shown = toDisplay(valueSI, dimension, units);
+	const value = presetDigits === undefined ? shown : Number(shown.toPrecision(presetDigits));
+	// No round-off floor: E and I are inputs (or a section's positive I), never noise, so an
+	// absurd "E 1e-300 Pa" must read "1e-309 GPa", not "0 GPa", next to the warning it causes.
+	return `${formatSignificant(value, 4, 0)} ${unitSymbol(dimension, units)}`;
 }
+
+/** Significant digits for E taken from a material preset (see formatProperty). */
+const PRESET_DIGITS = 3;
 
 /** "structural steel" from "Structural steel": material labels read as part of a sentence. */
 function lowerFirst(text: string): string {
@@ -81,17 +99,11 @@ function lowerFirst(text: string): string {
 }
 
 /**
- * Span-to-deflection ratio, the usual serviceability measure ("L/320").
- * L is the full beam length; for a cantilever check, users compare against
- * their code's cantilever limit.
- */
-function spanRatio(length: number, deflection: number): string {
-	return `L/${Math.round(length / Math.abs(deflection))}`;
-}
-
-/**
  * Builds the results table rows for a solved beam (empty when unsolved).
- * Values are in the block's unit system and use `decimals` decimal places.
+ * Values are in the block's unit system and use `decimals` decimal places;
+ * E and I use 4 significant digits instead (see formatSignificant). Rows:
+ * units, reactions, determinacy, extremes, the worst deflection ratio
+ * (see governingDeflectionRatio), material, section and stress.
  *
  * Sign handling (internal convention from types.ts: forces up, couples
  * counter-clockwise, sagging moment positive):
@@ -108,10 +120,21 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 	const model = results.model;
 	const rows: ResultRow[] = [];
 
-	const qty = (value: number, dimension: Dimension): string => formatQuantity(value, dimension, units, d);
-	const at = (x: number): string => `at x = ${qty(x, 'length')}`;
+	// The table has room for long numbers: fixed decimals up to TABLE_PLAIN_LIMIT
+	// ("200000000.0000 N·mm"), not the diagram labels' exponent form from 1e7.
+	const qty = (value: number, dimension: Dimension): string => formatQuantity(value, dimension, units, d, TABLE_PLAIN_LIMIT);
+	// Computed positions keep at least 2 decimals (formatResultPosition), so "decimals 0" still locates the peak.
+	const at = (x: number): string => `at x = ${formatResultPosition(x, units, d, TABLE_PLAIN_LIMIT)}`;
 	/** Number part of a formatted quantity, to test whether it displays as zero. */
-	const shown = (value: number, dimension: Dimension): string => formatNumber(toDisplay(value, dimension, units), d);
+	const shown = (value: number, dimension: Dimension): string => formatNumber(toDisplay(value, dimension, units), d, TABLE_PLAIN_LIMIT);
+
+	// --- Units. Bare numbers follow the plugin setting when the block has no units line, so the same
+	// note reads differently on another device or after a settings change: say so where it is seen.
+	const unitLabel = UNIT_SYSTEMS[units].label;
+	rows.push({
+		label: 'Units',
+		value: analysis.ast.units === undefined ? `${unitLabel}, plugin default (add a units line to make it explicit)` : unitLabel,
+	});
 
 	// --- Reactions, named A, B, C... left to right (model.supports is sorted by x).
 	for (const r of results.reactions) {
@@ -128,6 +151,9 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 	}
 
 	// --- Determinacy. Results only exist for stable beams; "Unstable" is a defensive fallback.
+	// The degree counts vertical and rotational restraints only (the model carries no axial
+	// forces), so a pin-pin beam is determinate here while textbooks that count horizontal
+	// reactions call it indeterminate to degree 1. The qualifier says which count this is.
 	const degree = results.classification.degree;
 	rows.push({
 		label: 'Static determinacy',
@@ -135,8 +161,8 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 			degree === null
 				? 'Unstable'
 				: degree === 0
-					? 'Statically determinate'
-					: `Statically indeterminate (degree ${degree})`,
+					? 'Statically determinate (vertical loads)'
+					: `Statically indeterminate, degree ${degree} (vertical loads)`,
 	});
 
 	// --- Extremes.
@@ -151,18 +177,22 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 
 	if (results.hasDeflection && deflectionMin && deflectionMax) {
 		const down = deflectionMin.value < 0 && !showsAsZero(shown(-deflectionMin.value, 'deflection'));
-		rows.push({
-			label: 'Max deflection down',
-			value: down
-				? `${qty(-deflectionMin.value, 'deflection')} ${at(deflectionMin.x)} (${spanRatio(model.length, deflectionMin.value)})`
-				: 'None',
-		});
+		rows.push({ label: 'Max deflection down', value: down ? `${qty(-deflectionMin.value, 'deflection')} ${at(deflectionMin.x)}` : 'None' });
 		// Upward deflection only matters for overhangs and uplift loads: list it only when present.
 		if (deflectionMax.value > 0 && !showsAsZero(shown(deflectionMax.value, 'deflection'))) {
-			rows.push({
-				label: 'Max deflection up',
-				value: `${qty(deflectionMax.value, 'deflection')} ${at(deflectionMax.x)} (${spanRatio(model.length, deflectionMax.value)})`,
-			});
+			rows.push({ label: 'Max deflection up', value: `${qty(deflectionMax.value, 'deflection')} ${at(deflectionMax.x)}` });
+		}
+		// One ratio for the whole beam, taken per span and cantilever (governingDeflectionRatio in
+		// core/diagrams.ts, shared with the large-deflection warning).
+		const governing = governingDeflectionRatio(results);
+		if (governing) {
+			// Region ends named like the drawing: support letters, or "free end".
+			const end = (x: number): string => {
+				const index = model.supports.findIndex((s) => Math.abs(s.x - x) <= POSITION_TOL * model.length);
+				return index < 0 ? 'free end' : supportName(index);
+			};
+			const where = `${governing.kind} ${qty(governing.x1 - governing.x0, 'length')}, ${end(governing.x0)} to ${end(governing.x1)}`;
+			rows.push({ label: 'Worst deflection ratio', value: `${formatSpanRatio(governing.x1 - governing.x0, governing.peak)} (${where})` });
 		}
 	}
 
@@ -175,13 +205,16 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 			const name = lowerFirst(model.material.label);
 			note = analysis.ast.E !== undefined ? ` (overrides ${name})` : ` (${name})`;
 		}
-		rows.push({ label: 'Material', value: `E = ${formatProperty(model.E, 'modulus', units)}${note}` });
+		// E from a preset (no typed E) is rounded to the preset's own precision.
+		const fromPreset = model.material !== undefined && analysis.ast.E === undefined;
+		rows.push({ label: 'Material', value: `E = ${formatProperty(model.E, 'modulus', units, fromPreset ? PRESET_DIGITS : undefined)}${note}` });
 	} else if (model.material) {
 		rows.push({ label: 'Material', value: model.material.label });
 	}
 	if (model.I !== undefined) {
+		// A comma rather than parentheses: section labels have their own ("I-beam (no fillets) ...").
 		let note = '';
-		if (model.section) note = analysis.ast.I !== undefined ? ` (overrides ${model.section.label})` : ` (${model.section.label})`;
+		if (model.section) note = analysis.ast.I !== undefined ? `, overrides ${model.section.label}` : `, ${model.section.label}`;
 		rows.push({ label: 'Section', value: `I = ${formatProperty(model.I, 'inertia', units)}${note}` });
 	} else if (model.section) {
 		rows.push({ label: 'Section', value: model.section.label });
@@ -192,17 +225,22 @@ export function resultRows(analysis: AnalysisOutput, decimals: number): ResultRo
 	return rows;
 }
 
-/** Splits block text into lines the same way the parser numbers them. */
+/** Splits block text into lines the same way the parser numbers them (the parser's own splitLines). */
 function sourceLines(source: string | undefined): string[] | undefined {
-	return source === undefined ? undefined : source.split(/\r\n|\r|\n/);
+	return source === undefined ? undefined : splitLines(source);
 }
 
 /**
  * Error box listing every error. Line errors show the offending line under
  * the message so the user can spot it without counting lines.
+ *
+ * Deliberately not role="alert": the box is rebuilt on every redraw (each
+ * typing pause in the editor, each resize, each settings change), and an
+ * alert would make screen readers announce it again every time. The editor
+ * has its own status line as the live region.
  */
 function renderErrors(container: HTMLElement, errors: Diagnostic[], lines: string[] | undefined): void {
-	const box = container.createDiv({ cls: 'bsd-error', attr: { role: 'alert' } });
+	const box = container.createDiv({ cls: 'bsd-error' });
 	box.createDiv({
 		cls: 'bsd-error-heading',
 		text: errors.length === 1 ? 'Fix this problem to draw the beam:' : `Fix these ${errors.length} problems to draw the beam:`,
@@ -225,6 +263,25 @@ function renderWarnings(container: HTMLElement, warnings: Diagnostic[]): void {
 	for (const warning of warnings) list.createEl('li', { text: diagnosticText(warning) });
 }
 
+/** No-break space (U+00A0). */
+const NBSP = '\u00a0';
+
+/**
+ * Glues the pieces of a table cell that must not wrap apart on a narrow
+ * screen: a number and the unit or word after it ("5.00 m", "degree 2"),
+ * an arrow and its value ("18.67 kN ↑"), "x = ", and the short phrases
+ * "vertical loads" and "free end". Other spaces still wrap. Display only:
+ * resultRows keeps plain spaces.
+ */
+export function keepTogether(text: string): string {
+	return text
+		.replace(/(\d) (?=\S)/g, `$1${NBSP}`)
+		.replace(/ (?=[↑↓↺↻])/g, NBSP)
+		.replace(/\bdegree (?=\d)/g, `degree${NBSP}`)
+		.replace(/\bx = /g, `x${NBSP}=${NBSP}`)
+		.replace(/\b(vertical|free) (loads|end)\b/g, `$1${NBSP}$2`);
+}
+
 /** Two-column table: row header (th scope=row) and value. */
 function renderTable(container: HTMLElement, rows: ResultRow[]): void {
 	if (rows.length === 0) return;
@@ -233,8 +290,8 @@ function renderTable(container: HTMLElement, rows: ResultRow[]): void {
 	const body = table.createEl('tbody');
 	for (const row of rows) {
 		const tr = body.createEl('tr');
-		tr.createEl('th', { text: row.label, attr: { scope: 'row' } });
-		tr.createEl('td', { text: row.value });
+		tr.createEl('th', { text: keepTogether(row.label), attr: { scope: 'row' } });
+		tr.createEl('td', { text: keepTogether(row.value) });
 	}
 }
 
@@ -242,8 +299,9 @@ function renderTable(container: HTMLElement, rows: ResultRow[]): void {
  * Renders `analysis` into `container` at `width` px (the caller adds the
  * `bsd-block` class and measures the width). The container is emptied first.
  *
- * With errors: an error box (`.bsd-error`, role="alert") with "Line N:
- * message" entries and, when `source` is given, the offending line text.
+ * With errors: an error box (`.bsd-error`, deliberately not a live region,
+ * see renderErrors) with "Line N: message" entries and, when `source` is
+ * given, the offending line text.
  * Otherwise: optional title, the beam drawing, shear and moment diagrams, the
  * deflection diagram (when available and enabled), warnings, the results
  * table (when enabled) and a disclaimer.

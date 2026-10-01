@@ -13,15 +13,18 @@
  *
  * The AST cannot hold comments, so re-serializing drops them; a note says so
  * whenever the block being edited has comments.
+ *
+ * Saving always writes an explicit `units` line (the plugin default when the
+ * block has none), so a saved block reads the same on every device and after
+ * a settings change.
  */
 import { ButtonComponent, Modal, Setting, debounce, type App, type DropdownComponent, type Debouncer } from 'obsidian';
 import { BEAM_EXAMPLES, type BeamExample } from '../core/examples';
 import { findMaterial, MATERIAL_IDS, MATERIALS } from '../core/materials';
-import { emptyAst, parseBeamSource } from '../core/parser';
+import { emptyAst, parseBeamSource, splitLines } from '../core/parser';
 import { SECTION_SHAPES } from '../core/sections';
 import { serializeBeamAst } from '../core/serializer';
 import type {
-	AnalysisOutput,
 	AstHinge,
 	AstLoad,
 	AstSection,
@@ -34,14 +37,14 @@ import type {
 	SupportKind,
 	UnitSystemId,
 } from '../core/types';
-import { splitQuantity, UNIT_SYSTEMS, unitSymbol } from '../core/units';
+import { isUnitSystemId, splitQuantity, UNIT_SYSTEMS, unitSymbol } from '../core/units';
 import type BeamStaticsPlugin from '../main';
-import { isUnitSystemId, UNIT_SYSTEM_IDS } from '../settings';
+import { UNIT_SYSTEM_IDS } from '../settings';
 import { analyzeSafely, diagnosticText, renderBeamOutput } from './beam-view';
 
 /** Shown in the editor when saving an edited block back to the note fails. */
 export const WRITE_BACK_FAILED =
-	'Could not find this block in the note. Embedded or changed notes cannot be updated; copy the text from the Text tab instead.';
+	'Could not find this block in the note safely (it changed, or the same beam appears more than once). Copy the text from the Text tab instead';
 
 /** Shown when inserting fails (the insert callback returned false or threw). */
 const INSERT_FAILED = 'Could not insert the beam. Copy the text from the Text tab and paste it into the note instead';
@@ -166,6 +169,63 @@ export function newLoad(): AstLoad {
 	return { kind: 'point', magnitude: '10', direction: 'down', at: 'mid' };
 }
 
+/**
+ * Section dimensions as they must be written so the text means what the form
+ * shows. In the form, a bare dimension is in the default section unit (the
+ * placeholder of the Dimension unit field says so). Two cases need the unit
+ * written out:
+ *
+ * - A unit after only the LAST dimension applies to all of them in the text,
+ *   so form dims ["100", "200 cm"] written as "100 x 200 cm" would read back
+ *   as 100 cm x 200 cm. The bare dimensions get the default unit written out
+ *   ("100 mm x 200 cm").
+ * - In kN-m and kip-ft blocks bare section numbers are an error (the length
+ *   unit is m or ft, the section unit mm or in, so "0.1 x 0.2" is ambiguous).
+ *   A blank Dimension unit field then writes the default section unit as the
+ *   shared unit ("100 x 200 mm").
+ *
+ * Returns `section` itself when nothing needs changing (N-mm and lb-in keep
+ * bare numbers, which mean the same in the text).
+ */
+export function sectionForText(section: AstSection, units: UnitSystemId): AstSection {
+	if (section.unit !== undefined) return section;
+	const withUnit = (raw: string): boolean => {
+		const parts = splitQuantity(raw);
+		return parts.ok && parts.unit !== '';
+	};
+	const bare = section.dims.filter((d) => d.trim() !== '' && !withUnit(d));
+	if (bare.length === 0) return section;
+	const unit = unitSymbol('sectionLength', units);
+	const last = section.dims[section.dims.length - 1] ?? '';
+	if (withUnit(last)) {
+		return { ...section, dims: section.dims.map((d) => (d.trim() === '' || withUnit(d) ? d : `${d.trim()} ${unit}`)) };
+	}
+	return unit !== unitSymbol('length', units) ? { ...section, unit } : section;
+}
+
+/**
+ * Block text with an explicit `units` line. Bare numbers follow the plugin's
+ * default units, so a saved block without a units line would be re-read in
+ * other units on a device with another setting. Text that already has a
+ * units line, or does not parse, is returned unchanged.
+ *
+ * The line is inserted, not re-serialized, so comments and layout survive:
+ * before the first statement other than the title (the serializer's order).
+ */
+export function withExplicitUnits(text: string, units: UnitSystemId): string {
+	const { ast, diagnostics } = parseBeamSource(text);
+	if (ast.units !== undefined || diagnostics.some((d) => d.severity === 'error')) return text;
+	const eol = text.includes('\r\n') ? '\r\n' : '\n';
+	const lines = splitLines(text);
+	const isStatement = (line: string): boolean => {
+		const trimmed = line.trim();
+		return trimmed !== '' && !trimmed.startsWith('#') && !trimmed.startsWith('//') && !/^title(?=[\s:=]|$)/i.test(trimmed);
+	};
+	const index = lines.findIndex(isStatement);
+	lines.splice(index < 0 ? lines.length : index, 0, `units ${UNIT_SYSTEMS[units].keyword}`);
+	return lines.join(eol);
+}
+
 /** Example dimensions of a shape as numbers ("100 x 200 mm" -> ["100", "200"]). */
 function exampleDims(shape: SectionShape): string[] {
 	return SECTION_SHAPES[shape].example
@@ -220,6 +280,8 @@ export class BeamEditorModal extends Modal {
 	private commentCount = 0;
 	private hasErrors = true;
 	private submitting = false;
+	/** Set once closing must not ask any more (saved, or the user chose to discard). */
+	private closeConfirmed = false;
 	/** CSS selector of the element to focus after the form is rebuilt (keeps keyboard users in place). */
 	private pendingFocus: string | null = null;
 	private readonly schedulePreview: Debouncer<[], void>;
@@ -280,9 +342,10 @@ export class BeamEditorModal extends Modal {
 		this.parseErrorsEl = contentEl.createDiv({ cls: 'bsd-error bsd-modal-parse-errors', attr: { role: 'alert' } });
 		this.parseErrorsEl.toggle(false);
 
-		// The ids match the tab buttons' aria-controls ("bsd-modal-form", "bsd-modal-text").
-		this.formEl = contentEl.createDiv({ attr: { role: 'tabpanel', id: 'bsd-modal-form' } });
-		this.textPanelEl = contentEl.createDiv({ attr: { role: 'tabpanel', id: 'bsd-modal-text' } });
+		// The ids match the tab buttons' aria-controls ("bsd-modal-form", "bsd-modal-text"),
+		// and each panel is named by its tab button.
+		this.formEl = contentEl.createDiv({ attr: { role: 'tabpanel', id: 'bsd-modal-form', 'aria-labelledby': 'bsd-modal-tab-form' } });
+		this.textPanelEl = contentEl.createDiv({ attr: { role: 'tabpanel', id: 'bsd-modal-text', 'aria-labelledby': 'bsd-modal-tab-text' } });
 		this.buildTextPanel(this.textPanelEl);
 
 		new Setting(contentEl).setName('Preview').setHeading();
@@ -310,6 +373,19 @@ export class BeamEditorModal extends Modal {
 		});
 	}
 
+	/**
+	 * Escape, a click on the backdrop, the close button, Cancel and the mobile
+	 * back gesture all end up here. With unsaved changes, ask first instead of
+	 * silently throwing away a beam that may have taken a while to build.
+	 */
+	override close(): void {
+		if (!this.closeConfirmed && !this.submitting && this.text !== this.baseline) {
+			this.askToDiscard();
+			return;
+		}
+		super.close();
+	}
+
 	onClose(): void {
 		this.schedulePreview.cancel();
 		this.contentEl.empty();
@@ -324,6 +400,8 @@ export class BeamEditorModal extends Modal {
 			.setDesc('Replaces the current beam with a ready-made one')
 			.addDropdown((dropdown) => {
 				this.exampleDropdown = dropdown;
+				// Setting does not link its name to the control, so name the control itself.
+				dropdown.selectEl.setAttr('aria-label', 'Start from example');
 				dropdown.addOption('', 'Choose an example');
 				for (const example of BEAM_EXAMPLES) dropdown.addOption(example.id, example.name);
 				dropdown.onChange((id) => {
@@ -336,24 +414,57 @@ export class BeamEditorModal extends Modal {
 			});
 	}
 
-	/** Inline confirmation (window.confirm is blocked on mobile and looks foreign in Obsidian). */
-	private askToReplace(example: BeamExample): void {
+	/**
+	 * Inline confirmation (window.confirm is blocked on mobile and looks foreign
+	 * in Obsidian): `question`, a destructive `action` button and "Keep editing".
+	 * The box is a labelled group and focus moves to "Keep editing", so keyboard
+	 * and screen reader users learn that a decision is pending and the safe
+	 * choice is one key press away.
+	 */
+	private confirm(question: string, action: string, onAction: () => void, onKeep: () => void): void {
 		const el = this.confirmEl;
 		el.empty();
-		el.createSpan({ text: `Replace your changes with the "${example.name}" example?` });
+		el.setAttrs({ role: 'group', 'aria-labelledby': 'bsd-modal-confirm-question' });
+		el.createSpan({ text: question, attr: { id: 'bsd-modal-confirm-question' } });
 		const buttons = el.createDiv({ cls: 'bsd-modal-confirm-buttons' });
 		new ButtonComponent(buttons)
-			.setButtonText('Replace')
+			.setButtonText(action)
 			.setDestructive()
 			.onClick(() => {
 				el.toggle(false);
-				this.loadExample(example);
+				onAction();
 			});
-		new ButtonComponent(buttons).setButtonText('Keep editing').onClick(() => {
+		const keep = new ButtonComponent(buttons).setButtonText('Keep editing').onClick(() => {
 			el.toggle(false);
-			this.exampleDropdown.setValue(this.exampleId);
+			onKeep();
 		});
 		el.toggle(true);
+		keep.buttonEl.focus();
+	}
+
+	/** Asks before an example replaces edits. */
+	private askToReplace(example: BeamExample): void {
+		this.confirm(
+			`Replace your changes with the "${example.name}" example?`,
+			'Replace',
+			() => this.loadExample(example),
+			() => {
+				this.exampleDropdown.setValue(this.exampleId);
+			},
+		);
+	}
+
+	/** Asks before closing throws away unsaved changes. */
+	private askToDiscard(): void {
+		this.confirm(
+			'Discard your changes?',
+			'Discard',
+			() => {
+				this.closeConfirmed = true;
+				this.close();
+			},
+			() => undefined,
+		);
 	}
 
 	/** Replaces everything with an example (examples always parse). */
@@ -372,26 +483,50 @@ export class BeamEditorModal extends Modal {
 		this.updatePreview();
 	}
 
-	/** The Form / Text tab buttons. */
+	/**
+	 * The Form / Text tab buttons, following the WAI-ARIA tabs pattern: only
+	 * the active tab is in the Tab order (roving tabindex, set in showTab), and
+	 * the arrow keys, Home and End move between tabs.
+	 */
 	private buildTabs(parent: HTMLElement): void {
 		const bar = parent.createDiv({ cls: 'bsd-modal-tabs', attr: { role: 'tablist', 'aria-label': 'Editor view' } });
 		const make = (tab: EditorTab, label: string): HTMLButtonElement => {
 			const button = bar.createEl('button', {
 				cls: 'bsd-modal-tab',
 				text: label,
-				attr: { type: 'button', role: 'tab', 'aria-controls': `bsd-modal-${tab}`, 'aria-selected': 'false' },
+				attr: { type: 'button', role: 'tab', id: `bsd-modal-tab-${tab}`, 'aria-controls': `bsd-modal-${tab}`, 'aria-selected': 'false' },
 			});
 			button.addEventListener('click', () => this.switchTab(tab));
 			return button;
 		};
 		this.tabButtons = { form: make('form', 'Form'), text: make('text', 'Text') };
+		bar.addEventListener('keydown', (evt: KeyboardEvent) => {
+			// Two tabs: Left/Right toggle, Home/End go to the first/last.
+			let target: EditorTab | null = null;
+			if (evt.key === 'ArrowLeft' || evt.key === 'ArrowRight') target = this.tab === 'form' ? 'text' : 'form';
+			else if (evt.key === 'Home') target = 'form';
+			else if (evt.key === 'End') target = 'text';
+			if (!target) return;
+			evt.preventDefault();
+			this.switchTab(target);
+			// Focus the tab actually shown: switching to the form is refused while the text has errors.
+			this.tabButtons[this.tab].focus();
+		});
 	}
 
 	/** The raw text editor. */
 	private buildTextPanel(parent: HTMLElement): void {
 		this.textAreaEl = parent.createEl('textarea', {
 			cls: 'bsd-modal-textarea',
-			attr: { 'aria-label': 'Beam block text', spellcheck: 'false', rows: 14 },
+			// No spelling, capitalisation or autocorrect: mobile keyboards would "correct" udl, kN or cm^4.
+			attr: {
+				'aria-label': 'Beam block text',
+				spellcheck: 'false',
+				autocapitalize: 'off',
+				autocorrect: 'off',
+				autocomplete: 'off',
+				rows: 14,
+			},
 		});
 		this.textAreaEl.addEventListener('input', () => {
 			this.text = this.textAreaEl.value;
@@ -400,7 +535,7 @@ export class BeamEditorModal extends Modal {
 		});
 		parent.createDiv({
 			cls: 'bsd-modal-hint',
-			text: 'One statement per line, for example: point 10 kN down at 2 m. Lines starting with # are comments.',
+			text: 'One statement per line, for example: point 10 kN down at 2 m. # or // starts a comment (except in a title).',
 		});
 	}
 
@@ -409,7 +544,9 @@ export class BeamEditorModal extends Modal {
 		const footer = parent.createDiv({ cls: 'bsd-modal-footer' });
 		this.submitErrorEl = footer.createDiv({ cls: 'bsd-modal-submit-error', attr: { role: 'alert' } });
 		this.submitErrorEl.toggle(false);
-		this.statusEl = footer.createDiv({ cls: 'bsd-modal-status' });
+		// The one polite live region of the editor: the preview's error box is rebuilt on every
+		// typing pause, so it is not live (see renderErrors), and this line speaks for it.
+		this.statusEl = footer.createDiv({ cls: 'bsd-modal-status', attr: { role: 'status' } });
 		const buttons = footer.createDiv({ cls: 'modal-button-container' });
 		new ButtonComponent(buttons).setButtonText('Cancel').onClick(() => this.close());
 		this.submitButton = new ButtonComponent(buttons)
@@ -447,7 +584,7 @@ export class BeamEditorModal extends Modal {
 		for (const key of ['form', 'text'] as const) {
 			const active = key === tab;
 			this.tabButtons[key].toggleClass('is-active', active);
-			this.tabButtons[key].setAttr('aria-selected', active ? 'true' : 'false');
+			this.tabButtons[key].setAttrs({ 'aria-selected': active ? 'true' : 'false', tabindex: active ? '0' : '-1' });
 		}
 		this.formEl.toggle(tab === 'form');
 		this.textPanelEl.toggle(tab === 'text');
@@ -474,7 +611,8 @@ export class BeamEditorModal extends Modal {
 	 * added or removed or a row changes shape (load type, section shape).
 	 */
 	private formChanged(rebuild = false): void {
-		this.text = serializeBeamAst(this.ast);
+		const section = this.ast.section;
+		this.text = serializeBeamAst(section ? { ...this.ast, section: sectionForText(section, this.units) } : this.ast);
 		this.hideSubmitError();
 		if (rebuild) this.renderForm();
 		this.schedulePreview();
@@ -486,15 +624,18 @@ export class BeamEditorModal extends Modal {
 		el.empty();
 		const ast = this.ast;
 
-		new Setting(el).setName('Title').addText((text) =>
+		// Setting does not link its name to the control, so every control below without an
+		// aria-label of its own gets one: otherwise a screen reader announces only the placeholder.
+		new Setting(el).setName('Title').addText((text) => {
 			text
 				.setPlaceholder('My beam')
 				.setValue(ast.title ?? '')
 				.onChange((value) => {
 					ast.title = optionalText(value);
 					this.formChanged();
-				}),
-		);
+				});
+			text.inputEl.setAttr('aria-label', 'Title');
+		});
 		new Setting(el)
 			.setName('Units')
 			.setDesc('Units of numbers typed without a unit, and of the results')
@@ -507,7 +648,7 @@ export class BeamEditorModal extends Modal {
 					this.pendingFocus = '[data-bsd-focus="units"]';
 					this.formChanged(true);
 				});
-				dropdown.selectEl.setAttr('data-bsd-focus', 'units');
+				dropdown.selectEl.setAttrs({ 'data-bsd-focus': 'units', 'aria-label': 'Units' });
 			});
 		new Setting(el).setName('Length').addText((text) => {
 			text
@@ -517,6 +658,7 @@ export class BeamEditorModal extends Modal {
 					ast.length = optionalText(value);
 					this.formChanged();
 				});
+			text.inputEl.setAttr('aria-label', 'Length');
 		});
 
 		this.renderSupports(el);
@@ -741,7 +883,7 @@ export class BeamEditorModal extends Modal {
 		new Setting(el)
 			.setName('Deflection (optional)')
 			.setHeading()
-			.setDesc('Give a material or E, and a section or I, to draw the deflected shape');
+			.setDesc('Set a material or the elastic modulus, and a section or the second moment of area, to draw the deflected shape');
 
 		new Setting(el).setName('Material').addDropdown((dropdown) => {
 			dropdown.addOption('', 'None');
@@ -753,19 +895,21 @@ export class BeamEditorModal extends Modal {
 				ast.material = optionalText(value);
 				this.formChanged();
 			});
+			dropdown.selectEl.setAttr('aria-label', 'Material');
 		});
 		new Setting(el)
 			.setName('E')
 			.setDesc('Elastic modulus; overrides the material')
-			.addText((text) =>
+			.addText((text) => {
 				text
 					.setPlaceholder(E_PLACEHOLDER[units])
 					.setValue(ast.E ?? '')
 					.onChange((value) => {
 						ast.E = optionalText(value);
 						this.formChanged();
-					}),
-			);
+					});
+				text.inputEl.setAttr('aria-label', 'E (elastic modulus)');
+			});
 
 		new Setting(el).setName('Section').addDropdown((dropdown) => {
 			dropdown.addOption('', 'None');
@@ -776,7 +920,7 @@ export class BeamEditorModal extends Modal {
 				this.pendingFocus = '[data-bsd-focus="section"]';
 				this.formChanged(true);
 			});
-			dropdown.selectEl.setAttr('data-bsd-focus', 'section');
+			dropdown.selectEl.setAttrs({ 'data-bsd-focus': 'section', 'aria-label': 'Section' });
 		});
 		const section = ast.section;
 		if (section) {
@@ -786,57 +930,62 @@ export class BeamEditorModal extends Modal {
 				new Setting(el)
 					.setName(dimLabel)
 					.setClass('bsd-modal-dim')
-					.addText((text) =>
+					.addText((text) => {
 						text
 							.setPlaceholder(examples[i] ?? '')
 							.setValue(section.dims[i] ?? '')
 							.onChange((value) => {
 								section.dims[i] = value.trim();
 								this.formChanged();
-							}),
-					);
+							});
+						text.inputEl.setAttr('aria-label', dimLabel);
+					});
 			});
 			new Setting(el)
 				.setName('Dimension unit')
 				.setClass('bsd-modal-dim')
-				.setDesc('Applies to every dimension above')
-				.addText((text) =>
+				.setDesc(`Applies to every dimension above without a unit of its own; blank means ${unitSymbol('sectionLength', units)}`)
+				.addText((text) => {
 					text
 						.setPlaceholder(unitSymbol('sectionLength', units))
 						.setValue(section.unit ?? '')
 						.onChange((value) => {
 							section.unit = optionalText(value);
 							this.formChanged();
-						}),
-				);
+						});
+					text.inputEl.setAttr('aria-label', 'Dimension unit');
+				});
 		}
 		new Setting(el)
 			.setName('I')
 			.setDesc('Second moment of area; overrides the section (stress still uses the section depth)')
-			.addText((text) =>
+			.addText((text) => {
 				text
 					.setPlaceholder(I_PLACEHOLDER[units])
 					.setValue(ast.I ?? '')
 					.onChange((value) => {
 						ast.I = optionalText(value);
 						this.formChanged();
-					}),
-			);
+					});
+				text.inputEl.setAttr('aria-label', 'I (second moment of area)');
+			});
 	}
 
 	// --- Preview and submit ------------------------------------------------
 
 	/** Analyses the current text, redraws the preview and enables or disables the submit button. */
-	private updatePreview(): AnalysisOutput {
+	private updatePreview(): void {
 		const settings = this.plugin.settings;
 		const analysis = analyzeSafely(this.text, settings.defaultUnits, settings.decimals);
 		this.hasErrors = !analysis.results || analysis.diagnostics.some((d) => d.severity === 'error');
 		this.submitButton.setDisabled(this.hasErrors || this.submitting);
-		this.statusEl.setText(this.hasErrors ? 'Fix the problems shown in the preview to continue' : '');
+		// The status line is a live region: rewriting the same text on every typing pause would
+		// make some screen readers repeat it, so only a real change touches it.
+		const status = this.hasErrors ? 'Fix the problems shown in the preview to continue' : '';
+		if (this.statusEl.getText() !== status) this.statusEl.setText(status);
 		this.statusEl.toggle(this.hasErrors);
 		const width = this.previewEl.clientWidth > 0 ? this.previewEl.clientWidth : PREVIEW_FALLBACK_WIDTH;
 		renderBeamOutput(this.previewEl, analysis, settings, width, this.text);
-		return analysis;
 	}
 
 	private hideSubmitError(): void {
@@ -844,7 +993,8 @@ export class BeamEditorModal extends Modal {
 	}
 
 	/**
-	 * Submits the current text if it analyses without errors. The modal
+	 * Submits the current text if it analyses without errors, with an explicit
+	 * units line added when it has none (see withExplicitUnits). The modal
 	 * closes only when onSubmit succeeds; otherwise an inline error explains
 	 * what to do and the text stays available.
 	 */
@@ -860,12 +1010,14 @@ export class BeamEditorModal extends Modal {
 		this.hideSubmitError();
 		let ok = false;
 		try {
-			ok = await this.options.onSubmit(this.text);
+			ok = await this.options.onSubmit(withExplicitUnits(this.text, this.plugin.settings.defaultUnits));
 		} catch {
 			ok = false;
 		}
 		this.submitting = false;
 		if (ok) {
+			// Saved: nothing is lost by closing, so do not ask.
+			this.closeConfirmed = true;
 			this.close();
 			return;
 		}

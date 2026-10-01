@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { Dimension, UnitSystemId } from '../src/core/types';
 import {
+	clampDecimals,
+	DEFAULT_DECIMALS,
 	formatCompact,
 	formatNumber,
+	formatPosition,
 	formatQuantity,
 	hasUnit,
 	isUnitSymbol,
+	isUnitSystemId,
 	lookupUnit,
 	parseQuantity,
 	parseUnitSystem,
 	splitQuantity,
+	TABLE_PLAIN_LIMIT,
 	toDisplay,
 	unitKey,
 	unitSymbol,
@@ -134,7 +139,6 @@ describe('parseQuantity: exact conversion factors', () => {
 		['1 lbf', 'force', 4.4482216152605],
 		['1 kip', 'force', 4448.2216152605],
 		['1 kips', 'force', 4448.2216152605],
-		['1 k', 'force', 4448.2216152605],
 		// moment
 		['1 N·m', 'moment', 1],
 		['1 kN·m', 'moment', 1e3],
@@ -208,13 +212,57 @@ describe('parseQuantity: spellings', () => {
 		['ft-lb', 1.3558179483314003],
 		['ft·lbf', 1.3558179483314003],
 		['ft-kip', 1355.8179483314004],
-		['k-ft', 1355.8179483314004],
 		['in-lb', 0.1129848290276167],
 		['in-kip', 112.9848290276167],
 		['kip-in', 112.9848290276167],
 		['lbf-in', 0.1129848290276167],
 	])('accepts imperial moment %s', (u, factor) => {
 		expect(si(`1 ${u}`, 'moment')).toBe(factor);
+	});
+
+	it('accepts the one-letter kip spellings in US blocks', () => {
+		for (const system of ['kip-ft', 'lb-in'] as const) {
+			expect(si('1 k', 'force', system)).toBe(4448.2216152605);
+			expect(si('1 K', 'force', system)).toBe(4448.2216152605);
+			expect(si('1 k-ft', 'moment', system)).toBe(1355.8179483314004);
+			expect(si('1 ft-k', 'moment', system)).toBe(1355.8179483314004);
+			expect(si('1 k-in', 'moment', system)).toBe(112.9848290276167);
+			expect(si('1 k/ft', 'distributed', system)).toBe(14593.902937206363);
+			expect(si('1 k/in', 'distributed', system)).toBe(175126.83524647637);
+		}
+	});
+
+	it('refuses the one-letter kip spellings in SI blocks, where "10 k" may mean kN', () => {
+		// Regression: "point 10k down at 3000" in N mm silently read 10 kip = 44.48 kN.
+		for (const system of ['kN-m', 'N-mm'] as const) {
+			expect(err('10 k', 'force', system)).toBe('"k" is ambiguous in an SI block: write kip or kN');
+			expect(err('10k', 'force', system)).toBe('"k" is ambiguous in an SI block: write kip or kN');
+			expect(err('10 K', 'force', system)).toBe('"K" is ambiguous in an SI block: write kip or kN');
+			expect(err('5 k-ft', 'moment', system)).toBe('"k-ft" is ambiguous in an SI block: write kip·ft or kN·m');
+			expect(err('5 in-k', 'moment', system)).toContain('ambiguous in an SI block');
+			expect(err('2 k/ft', 'distributed', system)).toBe('"k/ft" is ambiguous in an SI block: write kip/ft or kN/m');
+			expect(err('2 k/in', 'distributed', system)).toContain('ambiguous in an SI block');
+		}
+		// Written-out kip units stay accepted everywhere, including SI blocks.
+		expect(si('10 kip', 'force', 'kN-m')).toBe(44482.216152605);
+		expect(si('10 kips', 'force', 'N-mm')).toBe(44482.216152605);
+		expect(si('1 kip-ft', 'moment', 'kN-m')).toBe(1355.8179483314004);
+		expect(si('1 klf', 'distributed', 'kN-m')).toBe(14593.902937206363);
+		// A unit of the wrong dimension still gets the dimension message first.
+		expect(err('6 k', 'length', 'kN-m')).toContain('k is not a length unit');
+	});
+
+	it('refuses milli units typed with a lower-case m instead of reading them as mega', () => {
+		// Regression: "10 mN" read as 10 MN (1e7 N), a factor of 1e9 off.
+		expect(err('10 mN', 'force')).toBe('Unknown unit "mN": milli units are not supported; for mega write a capital M (MN, MPa)');
+		expect(err('10 mN·m', 'moment')).toContain('milli units are not supported');
+		expect(err('10 mN/m', 'distributed')).toContain('milli units are not supported');
+		expect(err('200 mPa', 'modulus')).toContain('milli units are not supported');
+		// All lower case keeps the common reading as mega, and mm is untouched.
+		expect(si('200 mpa', 'modulus')).toBe(200e6);
+		expect(si('3 mn', 'force')).toBe(3e6);
+		expect(si('3 MN', 'force')).toBe(3e6);
+		expect(si('5 mm', 'length')).toBe(0.005);
 	});
 
 	it('is case-insensitive', () => {
@@ -258,6 +306,20 @@ describe('parseQuantity: errors', () => {
 	it('rejects a decimal comma with a hint', () => {
 		expect(err('2,5', 'force')).toBe('Invalid number "2,5": use a dot as the decimal separator');
 		expect(err('1,5 kN', 'force')).toContain('use a dot as the decimal separator');
+		expect(err('1,25 kN', 'force')).toContain('use a dot as the decimal separator');
+	});
+
+	it('explains a thousands separator instead of suggesting a decimal dot', () => {
+		// Regression: "1,000" was answered with "use a dot as the decimal separator", nudging toward 1.000 = 1.
+		expect(err('1,000 N', 'force')).toBe('Invalid number "1,000": write numbers without separators, for example 1000 (use a dot for decimals: 1.5)');
+		expect(err('12,500,000 N', 'force')).toContain('for example 12500000');
+		expect(err('-1,000', 'force')).toContain('for example -1000');
+	});
+
+	it('refuses a typographic dash as a minus sign', () => {
+		// Regression: an en dash (U+2013) from a word processor gave a vague "Expected a number".
+		expect(err('\u201310 kN', 'force')).toBe('Use a plain "-" for a minus sign, not a typographic dash');
+		expect(err('\u2014.5 kN', 'force')).toBe('Use a plain "-" for a minus sign, not a typographic dash');
 	});
 
 	it('rejects a unit of the wrong dimension', () => {
@@ -285,6 +347,32 @@ describe('parseQuantity: errors', () => {
 		expect(err('', 'force')).toBe('Expected a number');
 		expect(err('kN', 'force')).toBe('Expected a number, got "kN"');
 		expect(err('1e999 N', 'force')).toContain('too large');
+	});
+
+	it('checks the value after unit conversion, not only the typed number', () => {
+		// Regression: "E 1e308 GPa" became Infinity and silently disabled deflection.
+		expect(err('1e308 GPa', 'modulus')).toBe('The number "1e308" is too large in these units');
+		expect(err('1e308 kN', 'force')).toBe('The number "1e308" is too large in these units');
+		// A bare number goes through the system unit too (kN in kN-m).
+		expect(err('1e308', 'force')).toBe('The number "1e308" is too large in these units');
+		expect(err('5e-324 N', 'force')).toBe('The number "5e-324" is too small in these units');
+		expect(err('1e-300 mm', 'length')).toBe('The number "1e-300" is too small in these units');
+		// Zero and ordinary small values are fine.
+		expect(si('0 kN', 'force')).toBe(0);
+		expect(si('1e-12 kN', 'force')).toBe(1e-9);
+	});
+
+	it('shortens long user text quoted in messages', () => {
+		const junk = 'a'.repeat(300);
+		const message = err(`10 ${junk}`, 'force');
+		expect(message).toBe(`Unknown unit "${'a'.repeat(30)}...": use kN, N, kip or lb`);
+	});
+});
+
+describe('isUnitSystemId', () => {
+	it('accepts exactly the four ids', () => {
+		for (const id of SYSTEMS) expect(isUnitSystemId(id)).toBe(true);
+		for (const value of ['kN m', 'si', 'constructor', '', 3, undefined, null]) expect(isUnitSystemId(value)).toBe(false);
 	});
 });
 
@@ -357,20 +445,53 @@ describe('formatNumber', () => {
 		expect(formatNumber(5e-12, 2)).toBe('0.00');
 	});
 
-	it('uses 3 significant digits in exponent form for tiny non-zero values', () => {
-		expect(formatNumber(0.000312, 2)).toBe('3.12e-4');
-		expect(formatNumber(-0.000312, 2)).toBe('-3.12e-4');
-		expect(formatNumber(0.004, 2)).toBe('4.00e-3');
+	it('uses 3 significant digits in plain decimals for small values that would read as zero', () => {
+		// Regression: the overhang example showed "5.45e-3 in" and decimals 0 showed reactions as "5.00e-1 kN".
+		expect(formatNumber(0.00545, 2)).toBe('0.00545');
+		expect(formatNumber(-0.0025, 2)).toBe('-0.00250');
+		expect(formatNumber(0.000833, 2)).toBe('0.000833');
+		expect(formatNumber(0.000312, 2)).toBe('0.000312');
+		expect(formatNumber(-0.000312, 2)).toBe('-0.000312');
+		expect(formatNumber(0.004, 2)).toBe('0.00400');
+		expect(formatNumber(0.0001, 2)).toBe('0.000100');
+		expect(formatNumber(0.5, 0)).toBe('0.500');
+		expect(formatNumber(0.6667, 0)).toBe('0.667');
+		expect(formatNumber(0.000123, 3)).toBe('0.000123');
+		// At or above 10^-decimals the fixed form is kept, whatever the digits.
 		expect(formatNumber(0.01, 2)).toBe('0.01');
-		expect(formatNumber(0.000123, 3)).toBe('1.23e-4');
-		// At or above 10^-decimals the fixed form is kept.
 		expect(formatNumber(0.00123, 3)).toBe('0.001');
+		expect(formatNumber(1.4, 0)).toBe('1');
+		// More decimals than the value needs: plain fixed decimals, even below 1e-4.
+		expect(formatNumber(0.00005, 6)).toBe('0.000050');
 	});
 
-	it('uses exponent form for very large values', () => {
+	it('uses exponent form below 1e-4 when the decimals would hide the value', () => {
+		expect(formatNumber(0.0000312, 2)).toBe('3.12e-5');
+		expect(formatNumber(-0.0000312, 0)).toBe('-3.12e-5');
+		expect(formatNumber(4e-5, 2)).toBe('4.00e-5');
+	});
+
+	it('uses exponent form for very large values by default (diagram labels)', () => {
 		expect(formatNumber(12345678, 2)).toBe('1.23e7');
 		expect(formatNumber(-2e9, 1)).toBe('-2.00e9');
 		expect(formatNumber(9999999, 0)).toBe('9999999');
+	});
+
+	it('prints large values with fixed decimals below a larger limit (results table)', () => {
+		// Regression: a 2e8 N·mm moment printed "2.00e8" next to "100000.0000 N" at decimals 4.
+		expect(formatNumber(2e8, 4, TABLE_PLAIN_LIMIT)).toBe('200000000.0000');
+		expect(formatNumber(78125000, 2, TABLE_PLAIN_LIMIT)).toBe('78125000.00');
+		expect(formatNumber(-1.005e7, 0, TABLE_PLAIN_LIMIT)).toBe('-10050000');
+		expect(formatNumber(2e15, 2, TABLE_PLAIN_LIMIT)).toBe('2.00e15');
+		expect(formatQuantity(2e5, 'moment', 'N-mm', 4, TABLE_PLAIN_LIMIT)).toBe('200000000.0000 N·mm');
+		// Same value with the default limit stays short.
+		expect(formatQuantity(2e5, 'moment', 'N-mm', 4)).toBe('2.00e8 N·mm');
+	});
+
+	it('falls back to the default limit for a nonsense limit and caps it where toFixed stops', () => {
+		expect(formatNumber(12345678, 2, Number.NaN)).toBe('1.23e7');
+		expect(formatNumber(12345678, 2, -1)).toBe('1.23e7');
+		expect(formatNumber(1e22, 0, Number.POSITIVE_INFINITY)).toBe('1.00e22');
 	});
 
 	it('passes non-finite values through', () => {
@@ -395,5 +516,33 @@ describe('formatCompact and formatQuantity', () => {
 		expect(formatQuantity(0.0254, 'deflection', 'kip-ft', 3)).toBe('1.000 in');
 		expect(formatQuantity(4000, 'distributed', 'N-mm', 1)).toBe('4.0 N/mm');
 		expect(formatQuantity(-0, 'force', 'kN-m', 2)).toBe('0.00 kN');
+	});
+});
+
+describe('formatNumber round-off snapping', () => {
+	// Regression: two exact .375 reactions printed differently ("9.37 kN" next to "19.38 kN")
+	// because one came out of the solver as 9.374999999999996.
+	it('rounds a value one ulp below a tie like the tie itself', () => {
+		expect(formatNumber(9.374999999999996, 2)).toBe('9.38');
+		expect(formatNumber(19.375, 2)).toBe('19.38');
+		expect(formatQuantity(9374.999999999996, 'force', 'kN-m', 2)).toBe('9.38 kN');
+		// Real differences beyond 12 significant digits are not invented.
+		expect(formatNumber(9.3749, 2)).toBe('9.37');
+		expect(formatNumber(-2.4999999999999996, 0)).toBe('-3');
+	});
+});
+
+describe('formatPosition and clampDecimals', () => {
+	it('writes a position in the length unit without trailing zeros', () => {
+		expect(formatPosition(6, 'kN-m')).toBe('6 m');
+		expect(formatPosition(1.524, 'kip-ft')).toBe('5 ft');
+		expect(formatPosition(0.0254 * 30, 'kip-ft')).toBe('2.5 ft');
+		expect(formatPosition(2.16666, 'N-mm', 1)).toBe('2166.7 mm');
+	});
+
+	it('clamps decimals into 0..6 and falls back to the default', () => {
+		expect([-1, 0, 2.4, 2.6, 6, 9].map((d) => clampDecimals(d))).toEqual([0, 0, 2, 3, 6, 6]);
+		for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, '3', undefined, null]) expect(clampDecimals(bad)).toBe(DEFAULT_DECIMALS);
+		expect(DEFAULT_DECIMALS).toBe(2);
 	});
 });

@@ -8,7 +8,7 @@
  * "counter-clockwise couple" and "counter-clockwise arc" the same thing.
  */
 import type { Dimension, UnitSystemId } from '../core/types';
-import { formatCompact, toDisplay, unitSymbol } from '../core/units';
+import { clampDecimals, formatCompact, formatNumber, formatQuantity, toDisplay, unitSymbol } from '../core/units';
 import { estimateTextWidth, LAYOUT, px } from './scene';
 import type { Prim } from './scene';
 
@@ -51,9 +51,12 @@ export function sceneWidth(width: number): number {
 	return Number.isFinite(width) ? Math.max(width, LAYOUT.minWidth) : LAYOUT.minWidth;
 }
 
-/** Decimals for labels: an integer in 0..6, defaulting to 2 for nonsense input. */
+/**
+ * Decimals for labels: an integer in 0..6, defaulting to 2 for nonsense
+ * input. Same rule as the settings (clampDecimals in core/units.ts).
+ */
 export function labelDecimals(decimals: number): number {
-	return Number.isFinite(decimals) ? Math.max(0, Math.min(6, Math.round(decimals))) : 2;
+	return clampDecimals(decimals);
 }
 
 /**
@@ -139,20 +142,83 @@ export function arrowhead(cls: string, tipX: number, tipY: number, dirX: number,
 	};
 }
 
+/** Optional shape of a vertical arrow (see verticalArrow). */
+export interface ArrowStyle {
+	/** Full-size head length and half width [px]; default HEAD_LEN and HEAD_HALF. */
+	headLen?: number;
+	headHalf?: number;
+	/**
+	 * Vertical intervals [ya, yb] (any order) where the shaft is left out, so
+	 * it passes "behind" a label instead of striking through its text.
+	 */
+	gaps?: ReadonlyArray<readonly [number, number]>;
+}
+
 /**
  * Vertical arrow from y = fromY to y = toY (tip at toY): a shaft that stops
  * where the arrowhead starts, so the line end never pokes through the tip.
+ * Every shaft piece carries the tooltip, the head does not (it is tiny).
  */
-export function verticalArrow(shaftCls: string, headCls: string, x: number, fromY: number, toY: number, tooltip?: string): Prim[] {
+export function verticalArrow(
+	shaftCls: string,
+	headCls: string,
+	x: number,
+	fromY: number,
+	toY: number,
+	tooltip?: string,
+	style: ArrowStyle = {},
+): Prim[] {
+	const headLen = style.headLen ?? HEAD_LEN;
+	const headHalf = style.headHalf ?? HEAD_HALF;
 	const dir = toY >= fromY ? 1 : -1;
 	const length = Math.abs(toY - fromY);
 	// Short arrows get a proportionally smaller head so they still read as arrows.
-	const head = Math.min(HEAD_LEN, 0.6 * length);
-	const half = (HEAD_HALF * head) / HEAD_LEN;
+	const head = Math.min(headLen, 0.6 * length);
+	const half = (headHalf * head) / headLen;
 	const prims: Prim[] = [];
-	if (length - head > 0.5) prims.push(linePrim(shaftCls, x, fromY, x, toY - dir * head, tooltip));
+	if (length - head > 0.5) prims.push(...verticalLine(shaftCls, x, fromY, toY - dir * head, style.gaps ?? [], tooltip));
 	prims.push(arrowhead(headCls, x, toY, 0, dir, head, half));
 	return prims;
+}
+
+/**
+ * Vertical line from y = fromY to y = toY with the parts inside `gaps`
+ * ([ya, yb] intervals, any order) left out: one `line` primitive per
+ * remaining piece, each with the tooltip.
+ */
+export function verticalLine(
+	cls: string,
+	x: number,
+	fromY: number,
+	toY: number,
+	gaps: ReadonlyArray<readonly [number, number]>,
+	tooltip?: string,
+): Prim[] {
+	return subtractIntervals(fromY, toY, gaps).map(([a, b]) => linePrim(cls, x, a, x, b, tooltip));
+}
+
+/**
+ * The parts of the segment [from, to] outside every gap, in the direction
+ * from -> to. Pieces of 0.5 px or less are dropped (invisible after px()).
+ */
+function subtractIntervals(from: number, to: number, gaps: ReadonlyArray<readonly [number, number]>): [number, number][] {
+	const lo = Math.min(from, to);
+	const hi = Math.max(from, to);
+	let pieces: [number, number][] = [[lo, hi]];
+	for (const [g0, g1] of gaps) {
+		const ga = Math.min(g0, g1);
+		const gb = Math.max(g0, g1);
+		pieces = pieces.flatMap(([a, b]): [number, number][] => {
+			if (gb <= a || ga >= b) return [[a, b]];
+			const out: [number, number][] = [];
+			if (ga > a) out.push([a, ga]);
+			if (gb < b) out.push([gb, b]);
+			return out;
+		});
+	}
+	const kept = pieces.filter(([a, b]) => b - a > 0.5);
+	// Keep the caller's direction so a single piece equals the uncut shaft.
+	return from <= to ? kept : kept.reverse().map(([a, b]) => [b, a]);
 }
 
 /** Point on a circle at `deg` degrees (counter-clockwise on screen, 0 = right). */
@@ -222,19 +288,47 @@ export function packRows(items: readonly RowItem[], gap: number): number[] {
 	});
 }
 
+/** Same round-off floor as formatNumber: smaller display values are noise, not input. */
+const INPUT_ZERO_FLOOR = 1e-10;
+
 /**
  * A typed value shown compactly in display units: "10", "2.5", "0.125".
  * Input values (loads, positions) read better without padded zeros than
  * results do, so they use up to max(decimals, 3) decimals, trailing zeros
  * removed; this also hides unit-conversion round-off (9.9999999 kip -> "10").
+ *
+ * A non-zero value too small for those decimals (0.4 N in a kN block) would
+ * read as "0", so it falls back to formatNumber, the results formatter,
+ * which never prints a non-zero value as zero ("0.000400", "3.00e-5").
+ * Below 1e-10 display units the value is round-off and stays "0".
  */
 export function formatInput(valueSI: number, dimension: Dimension, units: UnitSystemId, decimals: number): string {
-	return formatCompact(toDisplay(valueSI, dimension, units), Math.max(decimals, 3));
+	const value = toDisplay(valueSI, dimension, units);
+	const text = formatCompact(value, Math.max(decimals, 3));
+	return text === '0' && Math.abs(value) >= INPUT_ZERO_FLOOR ? formatNumber(value, decimals) : text;
 }
 
-/** A position with its unit: "2.5 m". */
+/**
+ * A typed position with its unit: "2.5 m". Unlike formatPosition in
+ * core/units.ts (used in messages) it goes through formatInput, so a tiny
+ * non-zero position never reads "0 m".
+ */
 export function formatPosition(x: number, units: UnitSystemId, decimals: number): string {
 	return `${formatInput(x, 'length', units, decimals)} ${unitSymbol('length', units)}`;
+}
+
+/** Fewest decimals for a computed position (see formatResultPosition). */
+const RESULT_POSITION_MIN_DECIMALS = 2;
+
+/**
+ * A computed position (an extreme, a shear zero) with its unit: "2.17 m".
+ * Results keep fixed decimals like every other result, but never fewer than
+ * 2: at "decimals 0" the 2.17 m shear zero would otherwise read "x = 2 m",
+ * a point that is not where the maximum moment is. `maxPlain` is passed on
+ * to formatNumber (the results table uses TABLE_PLAIN_LIMIT).
+ */
+export function formatResultPosition(x: number, units: UnitSystemId, decimals: number, maxPlain?: number): string {
+	return formatQuantity(x, 'length', units, Math.max(decimals, RESULT_POSITION_MIN_DECIMALS), maxPlain);
 }
 
 /**

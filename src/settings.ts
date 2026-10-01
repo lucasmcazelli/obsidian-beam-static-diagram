@@ -8,20 +8,21 @@
  * beam blocks redraw as soon as a setting changes.
  */
 import { PluginSettingTab, type App, type SettingDefinitionItem } from 'obsidian';
-import type { MomentConvention, UnitSystemId } from './core/types';
-import { UNIT_SYSTEMS } from './core/units';
+import type { DisplayOptions, MomentConvention, UnitSystemId } from './core/types';
+import { clampDecimals, DECIMALS_MAX, DECIMALS_MIN, DEFAULT_DECIMALS, isUnitSystemId, UNIT_SYSTEMS } from './core/units';
 import type BeamStaticsPlugin from './main';
 
-/** Everything stored in the plugin's data.json. */
-export interface BeamStaticsSettings {
-	/** Unit system for blocks without a `units` line. */
-	defaultUnits: UnitSystemId;
-	/** Decimal places in labels and the results table, 0 to 6. */
-	decimals: number;
-	/** Which side of the axis sagging moment is drawn on. */
-	momentConvention: MomentConvention;
-	/** Draw the deflection diagram when E and I are known. */
-	showDeflection: boolean;
+// The decimals helpers and isUnitSystemId live in core/units.ts so the pure
+// renderers can use them too (this file imports obsidian). Re-exported here
+// for the UI modules that already import them from settings.
+export { clampDecimals, DECIMALS_MAX, DECIMALS_MIN, isUnitSystemId };
+
+/**
+ * Everything stored in the plugin's data.json: the shared display options
+ * (default units, decimals 0 to 6, moment convention, deflection diagram on
+ * or off) plus the UI-only results table switch.
+ */
+export interface BeamStaticsSettings extends DisplayOptions {
 	/** Show the results table under the diagrams. */
 	showResultsTable: boolean;
 }
@@ -29,37 +30,18 @@ export interface BeamStaticsSettings {
 /** Values used on first install and for any missing or invalid stored value. */
 export const DEFAULT_SETTINGS: BeamStaticsSettings = {
 	defaultUnits: 'kN-m',
-	decimals: 2,
+	decimals: DEFAULT_DECIMALS,
 	momentConvention: 'sagging-up',
 	showDeflection: true,
 	showResultsTable: true,
 };
 
-/** Smallest and largest number of decimals the settings accept. */
-export const DECIMALS_MIN = 0;
-export const DECIMALS_MAX = 6;
-
 /** Unit system ids in display order (the order of UNIT_SYSTEMS). */
 export const UNIT_SYSTEM_IDS = Object.keys(UNIT_SYSTEMS) as UnitSystemId[];
-
-/** True when `value` is one of the unit system ids. */
-export function isUnitSystemId(value: unknown): value is UnitSystemId {
-	return typeof value === 'string' && Object.prototype.hasOwnProperty.call(UNIT_SYSTEMS, value);
-}
 
 /** True when `value` is a moment diagram convention. */
 function isMomentConvention(value: unknown): value is MomentConvention {
 	return value === 'sagging-up' || value === 'tension-side';
-}
-
-/**
- * Rounds and clamps a decimals value into 0..6. Non-numbers fall back to the
- * default. Used both when loading data and right before rendering, so a hand
- * edited data.json can never make `toFixed` throw.
- */
-export function clampDecimals(value: unknown): number {
-	if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SETTINGS.decimals;
-	return Math.min(DECIMALS_MAX, Math.max(DECIMALS_MIN, Math.round(value)));
 }
 
 /**
@@ -88,6 +70,8 @@ export class BeamStaticsSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: BeamStaticsPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+		// Settings sidebar icon (Obsidian 1.11+); without it the plugin gets the generic one.
+		this.icon = 'ruler';
 	}
 
 	/** One control per setting; Obsidian binds each to `plugin.settings[key]`. */
@@ -133,7 +117,7 @@ export class BeamStaticsSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Show deflection diagram',
-				desc: 'Draw the deflected shape when a block gives a material or E, and a section or I.',
+				desc: 'Draw the deflected shape when a block sets a material or the elastic modulus, and a section or the second moment of area.',
 				control: { type: 'toggle', key: 'showDeflection', defaultValue: DEFAULT_SETTINGS.showDeflection },
 			},
 			{

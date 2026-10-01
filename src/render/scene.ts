@@ -4,13 +4,28 @@
  * The scene builders (beam-scene.ts, chart-scene.ts) only produce plain data
  * so they can be unit tested in Node. The UI layer mounts a scene with
  * Obsidian's createSvg() helper (src/ui/mount.ts), and svg-string.ts turns it
- * into markup for tests and README screenshots.
+ * into markup for tests. (The README screenshots come from the real mount
+ * path, through scripts/preview.)
  *
  * Colours never appear here: every primitive carries `bsd-*` CSS classes and
  * styles.css maps them to Obsidian theme variables, so light/dark themes and
  * PDF export work without re-rendering.
  */
 import type { DisplayOptions, UnitSystemId } from '../core/types';
+
+/**
+ * Attribute names that are never copied from a scene, by either output
+ * (src/ui/mount.ts and svg-string.ts). Scenes are built by our own code and
+ * never contain these, but refusing them keeps both outputs safe even if a
+ * future scene builder passes user text through: inline styles would bypass
+ * the theme classes, `on*` / `href` attributes could run script, and a
+ * `class` attribute would silently replace `prim.cls` (the only place
+ * classes come from).
+ */
+export function isForbiddenAttribute(name: string): boolean {
+	const lower = name.toLowerCase();
+	return lower === 'style' || lower === 'class' || lower.startsWith('on') || lower === 'href' || lower === 'xlink:href';
+}
 
 /** SVG elements used by the scenes. */
 export type PrimTag = 'path' | 'line' | 'polyline' | 'polygon' | 'circle' | 'rect' | 'text';

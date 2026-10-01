@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeBeam } from '../src/core/analyze';
+import { evaluateAt } from '../src/core/diagrams';
 import { BEAM_EXAMPLES } from '../src/core/examples';
 import { solveBeam } from '../src/core/solver';
 import type { BeamModel, BeamResults, DiagramQuantity, MomentConvention, UnitSystemId } from '../src/core/types';
+import { formatNumber, toDisplay } from '../src/core/units';
 import { buildBeamScene } from '../src/render/beam-scene';
 import { buildDiagramScene, segmentHitsBox, splitAtZero } from '../src/render/chart-scene';
-import { arcArrow, boxesOverlap, hatchPath, packRows, placeText, sceneWidth, verticalArrow } from '../src/render/draw';
+import { arcArrow, boxesOverlap, formatInput, hatchPath, packRows, placeText, sceneWidth, verticalArrow, verticalLine } from '../src/render/draw';
 import type { Box } from '../src/render/draw';
 import { createXLayout, estimateTextWidth, LAYOUT } from '../src/render/scene';
 import type { Prim, Scene, SceneOptions } from '../src/render/scene';
@@ -130,7 +132,130 @@ const CROWDED = block(
 	'section rect 100 x 300 mm',
 );
 
-const SOURCES: [string, string][] = [...BEAM_EXAMPLES.map((e) => [e.id, e.source] as [string, string]), ['crowded', CROWDED]];
+/** Four overlapping distributed loads (one upward): a stack of four bands. */
+const STACKED = block(
+	'length 8 m',
+	'pin at 0',
+	'roller at end',
+	'udl 4 kN/m down from 0 to 6',
+	'udl 2 kN/m down from 2 to 8',
+	'linear 0 to 6 kN/m down from 3 to 5',
+	'udl 3 kN/m up from 1 to 4',
+);
+
+/** Point loads closer together than their labels are wide, one of them upward. */
+const CLOSE_POINTS = block(
+	'length 6 m',
+	'pin at 0',
+	'roller at end',
+	'point 5 kN down at 1',
+	'point 5 kN down at 1.2',
+	'point 5 kN down at 1.4',
+	'point 8 kN down at 1.5',
+	'point 3 kN down at 3',
+	'point 3 kN up at 3.1',
+	'point 12 kN down at 3.2',
+	'point 2 kN down at 5.9',
+);
+
+/** Opposite point loads and a couple at one support, a couple at the free end. */
+const SAME_X = block(
+	'length 6 m',
+	'pin at 0',
+	'roller at 4',
+	'point 10 kN down at 0',
+	'point 6 kN down at 4',
+	'point 4 kN up at 4',
+	'moment 5 kNm ccw at 4',
+	'point 8 kN down at end',
+	'moment 2 kNm cw at end',
+);
+
+/** Touching patch loads narrower than their labels at small widths. */
+const PATCHES = block(
+	'length 10 m',
+	'pin at 0',
+	'roller at 10',
+	'udl 2 kN/m down from 0 to 1',
+	'udl 4 kN/m down from 1 to 2',
+	'udl 6 kN/m down from 2 to 3',
+	'udl 3 kN/m down from 3 to 3.5',
+	'udl 8 kN/m down from 3.5 to 4',
+	'linear 0 to 5 kN/m down from 6 to 10',
+);
+
+const SOURCES: [string, string][] = [
+	...BEAM_EXAMPLES.map((e) => [e.id, e.source] as [string, string]),
+	['crowded', CROWDED],
+	['stacked', STACKED],
+	['close-points', CLOSE_POINTS],
+	['same-x', SAME_X],
+	['patches', PATCHES],
+];
+
+/** The y of the beam axis in a beam scene. */
+function beamAxisY(scene: Scene): number {
+	return Number(scene.prims.find((p) => p.cls === 'bsd-beam')?.attrs.y1);
+}
+
+/** Length of a vertical arrowhead polygon [tip, base, base]. */
+function headLength(head: Prim | undefined): number {
+	const [tip, base] = parsePoints(head);
+	return Math.abs((tip?.[1] ?? 0) - (base?.[1] ?? 0));
+}
+
+/** True for the head of a vertical arrow (its base is horizontal), false for couple arcs. */
+function isVerticalHead(head: Prim): boolean {
+	const [, b1, b2] = parsePoints(head);
+	return b1?.[1] === b2?.[1] && b1?.[0] !== b2?.[0];
+}
+
+/**
+ * Tip x of every distributed-load arrowhead, sorted. Point-load heads are
+ * told apart by size: 9 px long, against at most 7 px for distributed loads.
+ */
+function distArrowXs(scene: Scene): number[] {
+	return scene.prims
+		.filter((p) => p.cls === 'bsd-arrowhead' && isVerticalHead(p) && headLength(p) < 8)
+		.map((p) => parsePoints(p)[0]?.[0] ?? 0)
+		.sort((a, b) => a - b);
+}
+
+/** Highest point (smallest y) of a band's outline between x0 and x1, clamped to the band. */
+function outlineTopUnder(band: Prim, x0: number, x1: number): number {
+	// Band polygon: [a, base], outline vertices..., [b, base].
+	const outline = parsePoints(band).slice(1, -1);
+	const a = outline[0]?.[0] ?? 0;
+	const b = outline[outline.length - 1]?.[0] ?? 0;
+	const at = (x: number): number => {
+		const cx = Math.min(b, Math.max(a, x));
+		for (let i = 1; i < outline.length; i++) {
+			const p = outline[i - 1] as [number, number];
+			const q = outline[i] as [number, number];
+			if (cx >= p[0] && cx <= q[0]) return q[0] === p[0] ? Math.min(p[1], q[1]) : p[1] + ((q[1] - p[1]) * (cx - p[0])) / (q[0] - p[0]);
+		}
+		return outline[0]?.[1] ?? 0;
+	};
+	const inside = outline.filter((pt) => pt[0] > x0 && pt[0] < x1).map((pt) => pt[1]);
+	return Math.min(at(x0), at(x1), ...inside);
+}
+
+/** The distributed-load band polygon and its label, matched through their shared tooltip. */
+function bandAndLabel(scene: Scene, tooltipStart: string): { band: Prim; label: Prim } {
+	const band = scene.prims.find((p) => p.cls === 'bsd-dist' && (p.tooltip ?? '').startsWith(tooltipStart));
+	const label = texts(scene, 'bsd-load-label').find((p) => (p.tooltip ?? '').startsWith(tooltipStart));
+	if (!band || !label) throw new Error(`Missing band or label for ${tooltipStart}`);
+	return { band, label };
+}
+
+/** Asserts that a distributed-load label sits right above its band: above the outline under it, within its 15 px label line. */
+function expectLabelOnBand(scene: Scene, tooltipStart: string): void {
+	const { band, label } = bandAndLabel(scene, tooltipStart);
+	const box = textBox(label);
+	const top = outlineTopUnder(band, box.x0, box.x1);
+	expect(box.y1, tooltipStart).toBeLessThanOrEqual(top);
+	expect(Number(label.attrs.y), tooltipStart).toBeGreaterThan(top - 15);
+}
 
 // ---------------------------------------------------------------------------
 // Invariants over every scene
@@ -240,11 +365,24 @@ describe('buildBeamScene', () => {
 		expect(texts(scene, 'bsd-load-label').map((p) => p.text)).toEqual(['10 kN', '4 kN/m']);
 		const cantilever = solve(example('cantilever'));
 		const labels = texts(buildBeamScene(cantilever.model, cantilever.results, opts(cantilever.units)), 'bsd-load-label').map((p) => p.text);
-		expect(labels).toEqual(['0 → 6 kN/m', '5 kN·m']);
+		// Applied couples show their sense like reaction couples do.
+		expect(labels).toEqual(['0 → 6 kN/m', '↺ 5 kN·m']);
+		const cw = solve(block('length 4', 'pin at 0', 'roller at 4', 'moment 3 kNm cw at 2'));
+		expect(texts(buildBeamScene(cw.model, undefined, opts(cw.units)), 'bsd-load-label').map((p) => p.text)).toEqual(['↻ 3 kN·m']);
+	});
+
+	it('never labels a small non-zero load as 0', () => {
+		// 0.4 N and 0.3 N·m in a kN-m block used to read "0 kN" and "0 kN·m".
+		const tiny = solve(block('length 6', 'pin at 0', 'roller at 6', 'point 4 kN at 1', 'point 0.4 N at 3', 'moment 0.3 Nm cw at 2'));
+		const labels = texts(buildBeamScene(tiny.model, tiny.results, opts(tiny.units)), 'bsd-load-label').map((p) => p.text);
+		expect(labels).toContain('0.000400 kN');
+		expect(labels).toContain('↻ 0.000300 kN·m');
+		expect(labels.some((t) => /(^|\s)0 kN/.test(t ?? ''))).toBe(false);
 	});
 
 	it('draws reactions with values only when results are given', () => {
-		expect(texts(scene, 'bsd-reaction-label').map((p) => p.text)).toEqual(['18.67 kN', '15.33 kN']);
+		// The support letter ties each value to its row in the results table.
+		expect(texts(scene, 'bsd-reaction-label').map((p) => p.text)).toEqual(['A 18.67 kN', 'B 15.33 kN']);
 		const heads = scene.prims.filter((p) => p.cls === 'bsd-arrowhead bsd-reaction-head');
 		expect(heads).toHaveLength(2);
 		const bare = buildBeamScene(ss.model, undefined, opts(ss.units));
@@ -267,7 +405,7 @@ describe('buildBeamScene', () => {
 		// The pin pulls down: its arrow tip is below its base.
 		const pinHead = heads[0] ?? [];
 		expect(pinHead[0]?.[1]).toBeGreaterThan(pinHead[1]?.[1] ?? 0);
-		expect(texts(s, 'bsd-reaction-label')[0]?.text).toBe('5.00 kN');
+		expect(texts(s, 'bsd-reaction-label')[0]?.text).toBe('A 5.00 kN');
 	});
 
 	it('draws fixed-end couples as curved arrows with a direction symbol', () => {
@@ -320,13 +458,17 @@ describe('buildBeamScene', () => {
 	});
 
 	it('spaces distributed-load arrows 18 to 28 px apart, at least 3 per load', () => {
-		const heads = scene.prims.filter((p) => p.cls === 'bsd-arrowhead').map((p) => parsePoints(p)[0]?.[0] ?? 0);
-		// 25 udl arrows plus the point load arrow.
-		const xs = [...new Set(heads)].sort((a, b) => a - b);
+		const xs = distArrowXs(scene);
+		const pointX = createXLayout(640, 6).toPx(2);
 		const gaps = xs.slice(1).map((x, i) => x - (xs[i] ?? 0));
-		// The point load arrow at 2 m lands on a udl arrow position, so every gap is a udl gap.
-		expect(Math.max(...gaps)).toBeLessThanOrEqual(28);
-		expect(Math.min(...gaps)).toBeGreaterThanOrEqual(18);
+		// The udl arrow at 2 m gives way to the point load arrow: that one gap
+		// spans two spacings, every other gap is a plain udl gap.
+		const across = gaps.filter((_, i) => (xs[i] ?? 0) < pointX && (xs[i + 1] ?? 0) > pointX);
+		const plain = gaps.filter((_, i) => !((xs[i] ?? 0) < pointX && (xs[i + 1] ?? 0) > pointX));
+		expect(across).toHaveLength(1);
+		expect(across[0]).toBeCloseTo(44, 0);
+		expect(Math.max(...plain)).toBeLessThanOrEqual(28);
+		expect(Math.min(...plain)).toBeGreaterThanOrEqual(18);
 		const short = solve(block('length 6', 'pin at 0', 'roller at 6', 'udl 2 kN/m down from 1 to 1.1'));
 		const shortScene = buildBeamScene(short.model, undefined, opts(short.units));
 		expect(shortScene.prims.filter((p) => p.cls === 'bsd-arrowhead').length).toBeGreaterThanOrEqual(3);
@@ -373,19 +515,21 @@ describe('buildBeamScene', () => {
 	});
 
 	it('keeps load labels, reaction labels and dimension labels from overlapping', () => {
-		const crowded = solve(CROWDED);
-		for (const width of [320, 640]) {
-			const s = buildBeamScene(crowded.model, crowded.results, opts(crowded.units, { width }));
-			for (const cls of ['bsd-load-label', 'bsd-reaction-label', 'bsd-dim-label']) {
-				const boxes = texts(s, cls).map(textBox);
-				for (let i = 0; i < boxes.length; i++) {
-					for (let j = i + 1; j < boxes.length; j++) {
-						expect(boxesOverlap(boxes[i] as Box, boxes[j] as Box), `${cls} ${i} ${j} at ${width}`).toBe(false);
+		for (const [id, source] of [['crowded', CROWDED], ['stacked', STACKED], ['close-points', CLOSE_POINTS], ['same-x', SAME_X], ['patches', PATCHES]]) {
+			const crowded = solve(source ?? '');
+			for (const width of [320, 640]) {
+				const s = buildBeamScene(crowded.model, crowded.results, opts(crowded.units, { width }));
+				for (const cls of ['bsd-load-label', 'bsd-reaction-label', 'bsd-dim-label']) {
+					const boxes = texts(s, cls).map(textBox);
+					for (let i = 0; i < boxes.length; i++) {
+						for (let j = i + 1; j < boxes.length; j++) {
+							expect(boxesOverlap(boxes[i] as Box, boxes[j] as Box), `${id} ${cls} ${i} ${j} at ${width}`).toBe(false);
+						}
 					}
 				}
+				// Every load still has a label.
+				expect(texts(s, 'bsd-load-label'), `${id} at ${width}`).toHaveLength(crowded.model.loads.length);
 			}
-			// Every load still has a label.
-			expect(texts(s, 'bsd-load-label')).toHaveLength(crowded.model.loads.length);
 		}
 	});
 
@@ -395,6 +539,157 @@ describe('buildBeamScene', () => {
 		const h1 = buildBeamScene(one.model, undefined, opts(one.units)).height;
 		const h3 = buildBeamScene(many.model, undefined, opts(many.units)).height;
 		expect(h3).toBeGreaterThan(h1);
+	});
+
+	it('makes a point load inside a distributed load stand out', () => {
+		const shafts = scene.prims.filter((p) => p.cls === 'bsd-load bsd-point');
+		const x = Number(shafts[0]?.attrs.x1);
+		expect(x).toBeCloseTo(createXLayout(640, 6).toPx(2), 1);
+		// Its head is larger than the 7 px heads of the distributed-load arrows...
+		const pointHead = scene.prims.find((p) => p.cls === 'bsd-arrowhead' && parsePoints(p)[0]?.[0] === x && headLength(p) > 8);
+		expect(headLength(pointHead)).toBeCloseTo(9, 1);
+		// ...and no distributed-load arrow is drawn on it or within 10 px of it.
+		const xs = distArrowXs(scene);
+		expect(xs.length).toBeGreaterThan(20);
+		expect(xs.every((d) => Math.abs(d - x) >= 10)).toBe(true);
+
+		// At a band end the point arrow replaces the end arrow.
+		const ends = solve(block('length 20 m', 'pin at 2', 'roller at 7', 'roller at 13', 'roller at 18', 'udl 5 kN/m down', 'point 10 kN down at 0', 'point 10 kN down at 20'));
+		const layout = createXLayout(640, 20);
+		const endXs = distArrowXs(buildBeamScene(ends.model, undefined, opts(ends.units)));
+		expect(endXs.every((d) => d - layout.left >= 10 && layout.right - d >= 10)).toBe(true);
+	});
+
+	it('writes each distributed-load label right above its own band, also in a stack', () => {
+		const st = solve(STACKED);
+		const dl = solve(block('length 8 m', 'pin at 0', 'roller at end', 'udl 3 kN/m down', 'udl 5 kN/m down from 0 to 4'));
+		for (const width of [320, 640]) {
+			const s = buildBeamScene(st.model, st.results, opts(st.units, { width }));
+			for (const tip of ['Uniform load 4 kN/m', 'Uniform load 2 kN/m', 'Linearly varying load 0 → 6 kN/m', 'Uniform load 3 kN/m']) expectLabelOnBand(s, tip);
+			// Dead load over the span with a partial live load stacked on it.
+			const d = buildBeamScene(dl.model, dl.results, opts(dl.units, { width }));
+			expectLabelOnBand(d, 'Uniform load 3 kN/m');
+			expectLabelOnBand(d, 'Uniform load 5 kN/m');
+		}
+	});
+
+	it('keeps a distributed-load label off the point-load arrows', () => {
+		const v = solve(block('length 6 m', 'pin at 0', 'roller at end', 'udl 20 kN/m down', 'point 2 kN down at 3', 'point 15 kN down at 4.5'));
+		for (const width of [320, 640]) {
+			const s = buildBeamScene(v.model, v.results, opts(v.units, { width }));
+			// The band middle is the 2 kN load's position: the label moves aside
+			// instead of stacking above that load's label.
+			expectLabelOnBand(s, 'Uniform load 20 kN/m');
+			const box = textBox(bandAndLabel(s, 'Uniform load 20 kN/m').label);
+			for (const shaft of s.prims.filter((p) => p.cls === 'bsd-load bsd-point')) {
+				const x = Number(shaft.attrs.x1);
+				expect(x < box.x0 - 8 || x > box.x1 + 8, `arrow at ${x} vs ${box.x0}..${box.x1}`).toBe(true);
+			}
+		}
+	});
+
+	it('moves band labels that do not fit next to each other into the label rows', () => {
+		const pt = solve(PATCHES);
+		const s = buildBeamScene(pt.model, undefined, opts(pt.units, { width: 320 }));
+		const labels = texts(s, 'bsd-load-label');
+		expect(labels).toHaveLength(6);
+		// At 320 px the 0.5 m patches are far narrower than their labels.
+		const beamTop = beamAxisY(s) - 2;
+		const inRows = labels.filter((p) => textBox(p).y1 < beamTop - 26 - 15);
+		expect(inRows.length).toBeGreaterThan(0);
+	});
+
+	it('spreads point loads at one position into separate, labelled arrows', () => {
+		const sx = solve(SAME_X);
+		const s = buildBeamScene(sx.model, sx.results, opts(sx.units));
+		const x4 = createXLayout(640, 6).toPx(4);
+		const shafts = [...new Set(s.prims.filter((p) => p.cls === 'bsd-load bsd-point').map((p) => Number(p.attrs.x1)))]
+			.filter((x) => Math.abs(x - x4) < 10)
+			.sort((a, b) => a - b);
+		expect(shafts).toHaveLength(2);
+		expect((shafts[1] ?? 0) - (shafts[0] ?? 0)).toBeCloseTo(8, 1);
+		// One up and one down: each label says which, in the arrows' left-to-right order.
+		const down = texts(s, 'bsd-load-label').find((p) => p.text === '6 kN ↓');
+		const up = texts(s, 'bsd-load-label').find((p) => p.text === '4 kN ↑');
+		expect(Number(down?.attrs.x)).toBeLessThan(Number(up?.attrs.x));
+		// Two loads in the same direction: two arrows, no symbols needed.
+		const twin = solve(block('length 6', 'pin at 0', 'roller at 6', 'point 3 kN at 2', 'point 3 kN at 2'));
+		const t = buildBeamScene(twin.model, undefined, opts(twin.units));
+		expect(new Set(t.prims.filter((p) => p.cls === 'bsd-load bsd-point').map((p) => p.attrs.x1)).size).toBe(2);
+		expect(texts(t, 'bsd-load-label').map((p) => p.text)).toEqual(['3 kN', '3 kN']);
+	});
+
+	it('connects a label pushed into a higher row to its own arrow', () => {
+		const cp = solve(CLOSE_POINTS);
+		for (const width of [320, 640]) {
+			const s = buildBeamScene(cp.model, undefined, opts(cp.units, { width }));
+			const labels = texts(s, 'bsd-load-label');
+			const boxes = labels.map(textBox);
+			const rowZero = Math.max(...labels.map((p) => Number(p.attrs.y)));
+			const leaders = s.prims.filter((p) => p.cls === 'bsd-load bsd-leader');
+			const raised = labels.filter((p) => Number(p.attrs.y) < rowZero);
+			expect(raised.length, `at ${width}`).toBeGreaterThan(0);
+			for (const label of raised) {
+				// Its leader starts 3 px under the label, at the arrow of the same load.
+				const own = leaders.filter((l) => l.tooltip === label.tooltip && Math.abs(Number(l.attrs.y1) - Number(label.attrs.y) - 3) < 0.2);
+				expect(own, `${label.text} at ${width}`).toHaveLength(1);
+				const shaft = s.prims.find((p) => p.cls === 'bsd-load bsd-point' && p.tooltip === label.tooltip);
+				expect(Number(own[0]?.attrs.x1)).toBe(Number(shaft?.attrs.x1));
+			}
+			// Leaders pass behind other labels, never through their text.
+			for (const l of leaders) {
+				const x = Number(l.attrs.x1);
+				const ya = Math.min(Number(l.attrs.y1), Number(l.attrs.y2));
+				const yb = Math.max(Number(l.attrs.y1), Number(l.attrs.y2));
+				for (const b of boxes) expect(x > b.x0 && x < b.x1 && ya < b.y1 && yb > b.y0).toBe(false);
+			}
+		}
+	});
+
+	it('keeps couple arcs clear of supports, distributed-load arrows, hinges and walls', () => {
+		// Couples at a pin and a roller: the arc ends stay above the support symbols.
+		const cs = solve(block('length 8 m', 'pin at 0', 'roller at end', 'moment 10 kNm cw at 0', 'moment 10 kNm ccw at end', 'moment 5 kNm ccw at 3'));
+		const s = buildBeamScene(cs.model, undefined, opts(cs.units));
+		const axis = beamAxisY(s);
+		const layout = createXLayout(640, 8);
+		s.prims.forEach((p, i) => {
+			if (p.cls !== 'bsd-load bsd-moment') return;
+			const [sx, sy] = String(p.attrs.d).split(' ').slice(1, 3).map(Number);
+			const headYs = parsePoints(s.prims[i + 1]).map((pt) => pt[1]);
+			const lowest = Math.max(sy ?? 0, ...headYs);
+			const atSupport = Math.abs((sx ?? 0) - layout.left) < 20 || Math.abs((sx ?? 0) - layout.right) < 20;
+			// 220 degree arc at a support (ends 20 degrees below the axis), 270 elsewhere (45 degrees).
+			if (atSupport) expect(lowest).toBeLessThanOrEqual(axis + 14 * Math.sin((20 * Math.PI) / 180) + 0.2);
+			else expect(lowest).toBeGreaterThan(axis + 9);
+		});
+
+		// No distributed-load arrow under the end couple of the cantilever...
+		const cant = solve(example('cantilever'));
+		const cx = createXLayout(640, 3).toPx(3);
+		expect(distArrowXs(buildBeamScene(cant.model, undefined, opts(cant.units))).every((x) => Math.abs(x - cx) >= 18)).toBe(true);
+		// ...pointing into a hinge...
+		const ger = solve(example('gerber'));
+		const hx = createXLayout(640, ger.model.length).toPx(ger.model.hinges[0] ?? 0);
+		expect(distArrowXs(buildBeamScene(ger.model, undefined, opts(ger.units))).every((x) => Math.abs(x - hx) >= 7)).toBe(true);
+		// ...or lying on a fixed-end wall: the end arrow moves 3 px into the band.
+		const prop = solve(example('propped'));
+		const first = distArrowXs(buildBeamScene(prop.model, undefined, opts(prop.units)))[0];
+		expect(first).toBeCloseTo(createXLayout(640, 6).left + 3, 1);
+	});
+
+	it('draws the reaction couple of an interior clamp below the beam, clear of the loads', () => {
+		const v = solve(block('length 10 m', 'roller at 0', 'fixed at 5', 'roller at 10', 'udl 6 kN/m down', 'point 10 kN down at 2'));
+		const s = buildBeamScene(v.model, v.results, opts(v.units));
+		const axis = beamAxisY(s);
+		const arc = s.prims.find((p) => p.tag === 'path' && p.cls === 'bsd-reaction');
+		const nums = String(arc?.attrs.d).match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
+		// "M sx sy A r r 0 large sweep ex ey": both ends above the axis, so the
+		// 270 degree arc runs below the beam with its gap at the top.
+		expect(nums[1]).toBeLessThan(axis);
+		expect(nums[nums.length - 1]).toBeLessThan(axis);
+		expect(nums[5]).toBe(1);
+		const clamp = createXLayout(640, 10).toPx(5);
+		expect(distArrowXs(s).every((x) => Math.abs(x - clamp) >= 22)).toBe(true);
 	});
 
 	it('labels the dimension line with key positions, ends first', () => {
@@ -431,6 +726,17 @@ describe('buildDiagramScene', () => {
 	const moment = buildDiagramScene(ss.results, 'moment', o);
 	const deflection = buildDiagramScene(ss.results, 'deflection', o);
 	const layout = createXLayout(640, 6);
+
+	it('says in the moment title when the tension-side convention is active', () => {
+		const t = buildDiagramScene(ss.results, 'moment', opts(ss.units, { momentConvention: 'tension-side' }));
+		const title = texts(t, 'bsd-diagram-title')[0];
+		expect(title?.text).toBe('Bending moment M (kN·m), tension side');
+		expect(texts(buildDiagramScene(ss.results, 'shear', opts(ss.units, { momentConvention: 'tension-side' })), 'bsd-diagram-title')[0]?.text).toBe('Shear force V (kN)');
+		// The longest title still fits the narrowest layout.
+		const us = solve(example('overhang'));
+		const narrow = buildDiagramScene(us.results, 'moment', opts(us.units, { width: 320, momentConvention: 'tension-side' }));
+		expect(textBox(texts(narrow, 'bsd-diagram-title')[0] as Prim).x1).toBeLessThanOrEqual(320);
+	});
 
 	it('titles each diagram with its symbol and unit', () => {
 		expect(texts(shear, 'bsd-diagram-title')[0]?.text).toBe('Shear force V (kN)');
@@ -556,6 +862,80 @@ describe('buildDiagramScene', () => {
 		}
 	});
 
+	it('never writes a key-point value over a neighbouring key point', () => {
+		// Loads 0.1 m apart: "+30.15" (M at 1.4 m) used to sit across the 1.2 m guide.
+		const cp = solve(CLOSE_POINTS);
+		const signed = (v: number): string => `${v > 0 ? '+' : ''}${formatNumber(toDisplay(v, 'moment', cp.units), 2)}`;
+		for (const width of [320, 640, 1100]) {
+			const m = buildDiagramScene(cp.results, 'moment', opts(cp.units, { width }));
+			const lay = createXLayout(width, cp.model.length);
+			for (const label of m.prims.filter((p) => p.tag === 'text' && p.cls === 'bsd-value')) {
+				const box = textBox(label);
+				for (const k of cp.results.keyPoints) {
+					const kx = lay.toPx(k);
+					if (!(kx > box.x0 + 2 && kx < box.x1 - 2)) continue;
+					// A label may only cover the key point whose value it shows.
+					const own = [signed(evaluateAt(cp.results.segments, 'M', k, 'left')), signed(evaluateAt(cp.results.segments, 'M', k, 'right'))];
+					expect(own, `"${label.text}" over x = ${k} at ${width}`).toContain(label.text);
+				}
+			}
+		}
+	});
+
+	it('marks shear zeros at jumps with a tick only, keeping the text for smooth zeros', () => {
+		const three = solve(block('length 20 m', 'pin at 2', 'roller at 7', 'roller at 13', 'roller at 18', 'udl 5 kN/m down', 'point 10 kN down at 0', 'point 10 kN down at 20'));
+		const v = buildDiagramScene(three.results, 'shear', opts(three.units));
+		// Seven zeros: four at the supports (jumps through zero), three in the spans.
+		expect(three.results.shearZeros).toHaveLength(7);
+		expect(v.prims.filter((p) => p.tag === 'line' && p.cls === 'bsd-zero')).toHaveLength(7);
+		expect(texts(v, 'bsd-zero').map((p) => p.text)).toEqual(['x = 5.31 m', 'x = 10.00 m', 'x = 14.69 m']);
+	});
+
+	it('writes a constant run once and emphasises only the largest magnitude', () => {
+		// A couple splits the constant shear into two segments: one "+3.00" for the run.
+		const cc = solve(block('length 4 m', 'fixed at 0', 'moment 10 kNm cw at end', 'moment 4 kNm ccw at 1.5', 'point 3 kN down at 2.5'));
+		const v = buildDiagramScene(cc.results, 'shear', opts(cc.units));
+		expect(texts(v, 'bsd-value').map((p) => p.text)).toEqual(['+3.00']);
+		// All hogging: only the most negative moment is bold, not the "max" -9.00 nearest zero.
+		const m = buildDiagramScene(cc.results, 'moment', opts(cc.units));
+		expect(texts(m, 'bsd-extreme').map((p) => p.text)).toEqual(['-13.50']);
+		expect(texts(m, 'bsd-value').map((p) => p.text)).toContain('-9.00');
+		// Equal values look the same: both span peaks of the continuous beam are bold.
+		const cont = solve(example('continuous'));
+		const cm = buildDiagramScene(cont.results, 'moment', opts(cont.units));
+		expect(texts(cm, 'bsd-extreme').map((p) => p.text).sort()).toEqual(['+12.66', '+12.66', '-22.50']);
+	});
+
+	it('does not take a cubic moment with equal samples for a constant one', () => {
+		// M = 5 at x = 0, 3 and 6 m, but +8.46 and +1.54 in between: not constant,
+		// so each end gets its own "+5.00" instead of one label for a "step".
+		const probe = solve(block('length 6 m', 'pin at 0', 'roller at 6', 'linear -6 to 6 kN/m down from 0 to 6', 'moment 5 kNm cw at 0', 'moment 5 kNm ccw at 6'));
+		const m = buildDiagramScene(probe.results, 'moment', opts(probe.units));
+		const fives = texts(m, 'bsd-value').filter((p) => p.text === '+5.00');
+		// One at each end (centred on it, or written just beside it).
+		expect(fives).toHaveLength(2);
+		expect(Math.abs(Number(fives[0]?.attrs.x) - layout.left)).toBeLessThanOrEqual(3);
+		expect(Math.abs(Number(fives[1]?.attrs.x) - layout.right)).toBeLessThanOrEqual(3);
+		expect(texts(m, 'bsd-value').map((p) => p.text)).toContain('+1.54');
+	});
+
+	it('writes nearly equal values side by side only once', () => {
+		// 0.01 kN and a 0.02 kN·m couple next to 1000 kN: the steps are invisible.
+		const tiny = solve(block('length 6 m', 'pin at 0', 'roller at end', 'point 0.01 kN down at 2', 'point 1000 kN down at 4', 'udl 0.05 kN/m down from 0 to 3', 'moment 0.02 kNm cw at 1'));
+		const v = texts(buildDiagramScene(tiny.results, 'shear', opts(tiny.units)), 'bsd-value').map((p) => p.text);
+		expect(v.filter((t) => t === '+333.35' || t === '+333.34')).toHaveLength(1);
+		const m = texts(buildDiagramScene(tiny.results, 'moment', opts(tiny.units)), 'bsd-value').map((p) => p.text);
+		expect(m.filter((t) => t === '+333.42' || t === '+333.44')).toHaveLength(1);
+	});
+
+	it('samples long segments densely enough to look smooth', () => {
+		const lin = solve(block('length 8 m', 'pin at 0', 'roller at end', 'linear -4 to 6 kN/m down from 0 to 8'));
+		const pts = curve(buildDiagramScene(lin.results, 'moment', opts(lin.units, { width: 1100 })));
+		const steps = pts.slice(1).map((p, i) => p[0] - (pts[i]?.[0] ?? 0));
+		// At most 6 px between samples (plus the 0.1 px rounding of the markup).
+		expect(Math.max(...steps)).toBeLessThanOrEqual(6.15);
+	});
+
 	it('labels the deflection extreme with direction and position', () => {
 		expect(texts(deflection, 'bsd-extreme').map((p) => p.text)).toEqual(['max 6.62 mm ↓ at 2.90 m']);
 		expect(deflection.desc).toBe('Largest downward deflection 6.62 mm at x = 2.90 m.');
@@ -573,8 +953,12 @@ describe('buildDiagramScene', () => {
 		expect(buildDiagramScene(propped.results, 'moment', opts(propped.units)).desc).toContain('Largest hogging moment 22.50 kN·m at x = 0.00 m.');
 	});
 
-	it('draws guides at every key point', () => {
-		expect(shear.prims.filter((p) => p.cls === 'bsd-guide')).toHaveLength(ss.results.keyPoints.length);
+	it('draws guides at the interior key points only', () => {
+		const guides = shear.prims.filter((p) => p.cls === 'bsd-guide').map((p) => Number(p.attrs.x1));
+		// Key points 0, 2 and 6 m: the beam ends are marked by the axis ends,
+		// and a guide there would show through the end labels.
+		expect(ss.results.keyPoints).toEqual([0, 2, 6]);
+		expect(guides).toEqual([Math.round(layout.toPx(2) * 10) / 10]);
 	});
 
 	it('draws a flat line labelled 0 when the diagram is zero', () => {
@@ -609,11 +993,31 @@ describe('buildDiagramScene', () => {
 		}
 	});
 
+	// Regression: with E and I given but out of range the note said "add a material", which was wrong.
+	it('says the deflection could not be computed when E and I are given but out of range', () => {
+		const absurd = solve(block('length 6', 'pin at 0', 'roller at end', 'point 10 at 2', 'E 1e-300 Pa', 'I 8000 cm^4'));
+		expect(absurd.results.hasDeflection).toBe(false);
+		const s = buildDiagramScene(absurd.results, 'deflection', opts(absurd.units, { width: 320 }));
+		expect(texts(s, 'bsd-note').map((p) => p.text).join(' ')).toBe('The deflection could not be computed: check E and I');
+		expect(s.desc).toBe('Deflection is not available: E and I are out of range.');
+	});
+
 	it('respects the decimals option', () => {
 		const three = buildDiagramScene(ss.results, 'shear', opts(ss.units, { decimals: 3 }));
 		expect(texts(three, 'bsd-extreme').map((p) => p.text)).toEqual(['+18.667', '-15.333']);
 		const zero = buildDiagramScene(ss.results, 'shear', opts(ss.units, { decimals: 0 }));
 		expect(texts(zero, 'bsd-extreme').map((p) => p.text)).toEqual(['+19', '-15']);
+	});
+
+	// Regression: at decimals 0 the 2.17 m shear zero read "x = 2 m", which is not where the peak moment is.
+	it('keeps at least 2 decimals for computed positions at low decimals', () => {
+		const zero = buildDiagramScene(ss.results, 'shear', opts(ss.units, { decimals: 0 }));
+		expect(texts(zero, 'bsd-zero').map((p) => p.text)).toEqual(['x = 2.17 m']);
+		expect(zero.desc).toContain('It changes sign at x = 2.17 m.');
+		const moment = buildDiagramScene(ss.results, 'moment', opts(ss.units, { decimals: 1 }));
+		expect(moment.desc).toBe('Largest sagging moment 29.4 kN·m at x = 2.17 m. Sagging moments are drawn above the axis.');
+		const deflection = buildDiagramScene(ss.results, 'deflection', opts(ss.units, { decimals: 0 }));
+		expect(texts(deflection, 'bsd-extreme').map((p) => p.text)).toEqual(['max 7 mm ↓ at 2.90 m']);
 	});
 });
 
@@ -687,6 +1091,32 @@ describe('drawing helpers', () => {
 		expect(String(cw[0]?.attrs.d)).toMatch(/A 14 14 0 1 1 /);
 	});
 
+	it('formats typed values compactly without turning small ones into 0', () => {
+		expect(formatInput(4000, 'force', 'kN-m', 2)).toBe('4');
+		expect(formatInput(2500, 'force', 'kN-m', 2)).toBe('2.5');
+		// 0.4 N in kN: three decimals would print "0".
+		expect(formatInput(0.4, 'force', 'kN-m', 2)).toBe('0.000400');
+		expect(formatInput(-0.4, 'force', 'kN-m', 2)).toBe('-0.000400');
+		expect(formatInput(0.003, 'force', 'kN-m', 2)).toBe('3.00e-6');
+		// Round-off stays 0.
+		expect(formatInput(1e-14, 'force', 'kN-m', 2)).toBe('0');
+		expect(formatInput(0, 'force', 'kN-m', 2)).toBe('0');
+	});
+
+	it('leaves gaps in arrow shafts and lines, and sizes heads on request', () => {
+		const pieces = verticalLine('bsd-load', 5, 0, 100, [[20, 30], [60, 50]]).map((p) => [p.attrs.y1, p.attrs.y2]);
+		expect(pieces).toEqual([[0, 20], [30, 50], [60, 100]]);
+		// Upwards: same pieces, in the direction of travel.
+		const up = verticalLine('bsd-load', 5, 100, 0, [[20, 30]]).map((p) => [p.attrs.y1, p.attrs.y2]);
+		expect(up).toEqual([[100, 30], [20, 0]]);
+		// A gap covering everything leaves nothing; pieces of 0.5 px or less are dropped.
+		expect(verticalLine('bsd-load', 5, 0, 10, [[-1, 9.6]])).toHaveLength(0);
+		const arrow = verticalArrow('bsd-load', 'bsd-arrowhead', 50, 0, 60, 'tip', { headLen: 9, headHalf: 4.5, gaps: [[10, 20]] });
+		expect(arrow.filter((p) => p.tag === 'line').map((p) => [p.attrs.y1, p.attrs.y2])).toEqual([[0, 10], [20, 51]]);
+		const head = parsePoints(arrow[arrow.length - 1]);
+		expect(head).toEqual([[50, 60], [45.5, 51], [54.5, 51]]);
+	});
+
 	it('sanitizes scene widths', () => {
 		expect(sceneWidth(800)).toBe(800);
 		expect(sceneWidth(10)).toBe(LAYOUT.minWidth);
@@ -709,10 +1139,18 @@ describe('sceneToSvgString', () => {
 				{ tag: 'text', cls: 'bsd-value', attrs: { x: 10, y: 20, 'text-anchor': 'start' }, text: '<b>&"\'</b>', tooltip: 'x < 2 & y > 1' },
 				{ tag: 'line', cls: 'bsd-axis', attrs: { x1: 0, y1: 0, x2: 10, y2: 0, 'data-note': 'a"b' } },
 				{ tag: 'circle', cls: 'bsd-hinge', attrs: { cx: 1, cy: 2, r: 3, 'onload="x"': 'bad', class: 'evil' } },
+				// Same filter as the mounted SVG (isForbiddenAttribute): no inline style, handlers or links.
+				{ tag: 'rect', cls: 'bsd-support', attrs: { x: 0, y: 0, width: 1, height: 1, style: 'fill:red', onclick: 'x()', href: 'https://example.com', 'xlink:href': '#a' } },
 			],
 		};
 		const svg = sceneToSvgString(scene);
-		expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 100" width="320" height="100" class="bsd-svg" role="img">')).toBe(true);
+		expect(
+			svg.startsWith(
+				'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 100" width="320" height="100" class="bsd-svg" role="img" aria-label="A &amp; B &lt;beam&gt;">',
+			),
+		).toBe(true);
+		expect(svg).toContain('<rect class="bsd-support" x="0" y="0" width="1" height="1"/>');
+		expect(svg).not.toMatch(/style=|onclick|href/);
 		expect(svg).toContain('<title>A &amp; B &lt;beam&gt;</title>');
 		expect(svg).toContain('<desc>Say &quot;hi&quot; &amp; &#39;bye&#39;</desc>');
 		expect(svg).toContain('<text class="bsd-value" x="10" y="20" text-anchor="start"><title>x &lt; 2 &amp; y &gt; 1</title>&lt;b&gt;&amp;&quot;&#39;&lt;/b&gt;</text>');

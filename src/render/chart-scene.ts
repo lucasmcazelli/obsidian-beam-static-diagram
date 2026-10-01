@@ -16,13 +16,14 @@
  * height from the axis, and a one-sided diagram (the moment of a simply
  * supported beam) uses the full height instead of wasting half of it.
  */
-import { forceScale } from '../core/analyze';
-import { evaluateAt, POSITION_TOL, sampleDiagram } from '../core/diagrams';
+import { evaluateAt, sampleDiagram } from '../core/diagrams';
 import type { SegmentField } from '../core/diagrams';
-import type { BeamResults, DiagramQuantity, Dimension, Extremum } from '../core/types';
 import { polyEval } from '../core/polynomial';
+import { forceScale } from '../core/scale';
+import { POSITION_TOL } from '../core/tolerances';
+import type { BeamResults, DiagramQuantity, Dimension, Extremum } from '../core/types';
 import { formatNumber, formatQuantity, toDisplay, unitSymbol } from '../core/units';
-import { boxesOverlap, labelDecimals, linePrim, pointsAttr, placeText, sceneWidth, textPrim } from './draw';
+import { boxesOverlap, formatResultPosition, labelDecimals, linePrim, pointsAttr, placeText, sceneWidth, textPrim } from './draw';
 import type { Anchor, Box, PlacedText } from './draw';
 import { createXLayout, estimateTextWidth, LAYOUT, px } from './scene';
 import type { Prim, Scene, SceneOptions } from './scene';
@@ -58,9 +59,13 @@ const HEIGHT = 150;
 /** Height of the placeholder scene shown when deflection is not available, and of each extra note line. */
 const NOTE_HEIGHT = 44;
 const NOTE_LINE_H = 13;
+/** Baseline of the first note line below the title baseline. */
+const NOTE_FIRST_DY = 18;
 /** Title position (top left). */
 const TITLE_X = 4;
 const TITLE_BASELINE = 13;
+/** Value labels keep this much space below the title baseline (its descenders). */
+const TITLE_CLEARANCE = 3;
 /** Plot area: below the title band, above a small bottom margin. */
 const PLOT_TOP = 20;
 const PLOT_BOTTOM = HEIGHT - 12;
@@ -76,13 +81,24 @@ const BELOW_DY = 11;
 const SIDE_DX = 3;
 /** Half length of the tick marking a zero of the shear force. */
 const ZERO_TICK = 4;
+/** The "0" of a flat (all zero) diagram: offset from the right end of the axis, and baseline below it. */
+const ZERO_LABEL_DX = 6;
+const ZERO_LABEL_DY = 3.5;
+/**
+ * Curves are sampled at least every this many px along the longest segment,
+ * so a long single segment on a wide drawing shows no polyline facets;
+ * capped so an absurd width cannot ask for millions of samples.
+ */
+const SAMPLE_PX = 6;
+const MAX_SAMPLES = 512;
 /** Minimum spacing between two labels [px]. */
 const LABEL_GAP = 2;
 /**
- * A key-point value is not written when an extreme label already shows
+ * A value label is not written when a label placed before it already shows
  * nearly the same number nearby: within this many px horizontally and this
  * fraction of the largest magnitude (for example "+29.33" under a point load
- * right next to the "+29.39" peak).
+ * right next to the "+29.39" peak). The two sides of a jump smaller than
+ * DUPLICATE_REL get one label.
  */
 const DUPLICATE_PX = 40;
 const DUPLICATE_REL = 0.03;
@@ -104,11 +120,14 @@ const ZERO_REL = 1e-9;
  *
  * With momentConvention 'tension-side' the moment diagram is drawn on the
  * tension side of the beam, so positive (sagging) values appear BELOW the
- * axis; their labels keep the sign of the internal convention ("+29.39").
+ * axis; their labels keep the sign of the internal convention ("+29.39"),
+ * and the title says "tension side" so the mirrored shape is explained.
  * Shear and deflection are always drawn positive up.
  *
- * Asking for 'deflection' when the results have none (no E or I) returns a
- * short scene with a note instead of throwing.
+ * Asking for 'deflection' when the results have none returns a short scene
+ * with a note instead of throwing: "add E and I" when one is missing, or a
+ * plain "could not be computed" when both are given but the solver withheld
+ * the deflection (out of double-precision range).
  */
 export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantity, options: SceneOptions): Scene {
 	const info = QUANTITIES[quantity];
@@ -119,29 +138,38 @@ export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantit
 	const units = options.units;
 	const decimals = labelDecimals(options.decimals);
 	const unit = unitSymbol(info.dimension, units);
-	const titleText = `${info.name} ${info.symbol} (${unit})`;
+	const tensionSide = quantity === 'moment' && options.momentConvention === 'tension-side';
+	// Short suffix: the longest title ("Bending moment M (kip·ft), tension side") still fits 320 px.
+	const titleText = `${info.name} ${info.symbol} (${unit})${tensionSide ? ', tension side' : ''}`;
 	const titlePrim = textPrim('bsd-diagram-title', placeText(TITLE_X, TITLE_BASELINE, titleText, LAYOUT.fontSize, width, 'start'), titleText);
 
 	if (quantity === 'deflection' && !results.hasDeflection) {
+		const missing = model.E === undefined || model.I === undefined;
+		const note = missing
+			? 'Add a material (or E) and a section (or I) to see the deflection'
+			: 'The deflection could not be computed: check E and I';
 		// Wrapped so it also fits the narrowest layout (320 px).
-		const lines = wrapWords('Add a material (or E) and a section (or I) to see the deflection', width - 2 * TITLE_X, LAYOUT.smallFontSize);
+		const lines = wrapWords(note, width - 2 * TITLE_X, LAYOUT.smallFontSize);
 		const notes = lines.map((line, i) =>
-			textPrim('bsd-note', placeText(TITLE_X, TITLE_BASELINE + 18 + i * NOTE_LINE_H, line, LAYOUT.smallFontSize, width, 'start'), line),
+			textPrim('bsd-note', placeText(TITLE_X, TITLE_BASELINE + NOTE_FIRST_DY + i * NOTE_LINE_H, line, LAYOUT.smallFontSize, width, 'start'), line),
 		);
 		return {
 			width,
 			height: NOTE_HEIGHT + (lines.length - 1) * NOTE_LINE_H,
 			title: info.sceneTitle,
-			desc: 'Deflection is not available because E or I is missing.',
+			desc: missing ? 'Deflection is not available because E or I is missing.' : 'Deflection is not available: E and I are out of range.',
 			prims: [titlePrim, ...notes],
 		};
 	}
 
 	const X = (x: number): number => layout.toPx(Number.isFinite(x) ? Math.min(Math.max(x, 0), L) : 0);
-	const series = sampleDiagram(results.segments, quantity, info.samples);
+	const longestPx = Math.max(0, ...results.segments.map((seg) => X(seg.x1) - X(seg.x0)));
+	const samples = Math.min(MAX_SAMPLES, Math.max(info.samples, Math.ceil(longestPx / SAMPLE_PX)));
+	// dedupe() below drops the extra samples that land on the same pixel.
+	const series = sampleDiagram(results.segments, quantity, samples);
 	const { max, min } = extremaOf(results, quantity);
 	// Moment on the tension side: sagging (positive) is drawn downwards.
-	const dirSign = quantity === 'moment' && options.momentConvention === 'tension-side' ? -1 : 1;
+	const dirSign = tensionSide ? -1 : 1;
 
 	let maxAbs = Math.max(Math.abs(max.value), Math.abs(min.value));
 	for (const y of series.ys) maxAbs = Math.max(maxAbs, Math.abs(y));
@@ -149,14 +177,19 @@ export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantit
 	const flat = !(maxAbs > ZERO_REL * referenceScale(results, quantity));
 
 	const prims: Prim[] = [];
-	// Faint guides at every key point tie the diagram to the beam drawing above.
-	for (const k of results.keyPoints) prims.push(linePrim('bsd-guide', X(k), PLOT_TOP, X(k), PLOT_BOTTOM));
+	// Faint guides at the interior key points tie the diagram to the beam
+	// drawing above. None at the beam ends: the axis ends already mark them,
+	// and a dashed line would show through the end labels centred there.
+	const eps = POSITION_TOL * L;
+	for (const k of results.keyPoints) {
+		if (k > eps && k < L - eps) prims.push(linePrim('bsd-guide', X(k), PLOT_TOP, X(k), PLOT_BOTTOM));
+	}
 
 	if (flat) {
 		const axisY = 0.5 * (PLOT_TOP + PLOT_BOTTOM);
 		prims.push(linePrim('bsd-axis', X(0), axisY, X(L), axisY));
 		prims.push(curvePrim(quantity, [[X(0), axisY], [X(L), axisY]]));
-		const zero = placeText(X(L) + 6, axisY + 3.5, '0', LAYOUT.smallFontSize, width, 'start');
+		const zero = placeText(X(L) + ZERO_LABEL_DX, axisY + ZERO_LABEL_DY, '0', LAYOUT.smallFontSize, width, 'start');
 		prims.push(textPrim('bsd-value', zero, '0'), titlePrim);
 		return { width, height: HEIGHT, title: info.sceneTitle, desc: `${info.name} is zero along the whole beam.`, prims };
 	}
@@ -196,28 +229,48 @@ export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantit
 	const near = (x: number, v: number, sides: Side[], inside: boolean): Placement[] =>
 		around(X(x), Y(v), dirSign * v > 0, sides, inside);
 
-	// Extremes worth a label: non-zero, and only once when the diagram is
-	// constant (max and min are then the same value at the same place).
-	const shownExtremes = (quantity === 'deflection' ? [min, max] : [max, min]).filter((e) => Math.abs(e.value) > zeroTol);
-	if (shownExtremes.length === 2 && Math.abs(max.value - min.value) <= zeroTol) shownExtremes.pop();
-	/** True when a value v at x would only repeat a nearby extreme label. */
-	const repeatsExtreme = (x: number, v: number): boolean =>
-		shownExtremes.some((e) => Math.abs(X(e.x) - X(x)) <= DUPLICATE_PX && Math.abs(e.value - v) <= DUPLICATE_REL * maxAbs);
+	// Extremes worth a label: the largest positive value only if positive and
+	// the most negative only if negative, so a one-signed diagram (all
+	// hogging, say) emphasises its largest magnitude and not the value
+	// nearest zero. This also writes a constant diagram's value once.
+	const positive = max.value > zeroTol ? [max] : [];
+	const negative = min.value < -zeroTol ? [min] : [];
+	const shownExtremes = quantity === 'deflection' ? [...negative, ...positive] : [...positive, ...negative];
+	const extremeTexts = new Set(shownExtremes.map((e) => signed(e.value)));
+	/**
+	 * Class of an ordinary value label: emphasised like the extremes when it
+	 * shows the same number (the equal peak of a second span), so equal values
+	 * never look different.
+	 */
+	const valueCls = (text: string): string => (extremeTexts.has(text) ? 'bsd-value bsd-extreme' : 'bsd-value');
 
 	for (const e of shownExtremes) {
 		// Deflection: "max 2.81 mm ↓ at 3.00 m" (magnitude, direction arrow and
 		// position); shear and moment: the signed value, "+18.67".
 		const text =
 			quantity === 'deflection'
-				? `max ${formatNumber(Math.abs(display(e.value)), decimals)} ${unit} ${e.value < 0 ? '↓' : '↑'} at ${formatQuantity(e.x, 'length', units, decimals)}`
+				? `max ${formatNumber(Math.abs(display(e.value)), decimals)} ${unit} ${e.value < 0 ? '↓' : '↑'} at ${formatResultPosition(e.x, units, decimals)}`
 				: signed(e.value);
-		candidates.push({ text, cls: 'bsd-value bsd-extreme', priority: 0, required: true, placements: near(e.x, e.value, ['mid', 'right', 'left'], false) });
+		candidates.push({
+			text,
+			cls: 'bsd-value bsd-extreme',
+			priority: 0,
+			required: true,
+			placements: near(e.x, e.value, ['mid', 'right', 'left'], false),
+			value: e.value,
+			span: [X(e.x), X(e.x)],
+		});
 	}
 
 	if (quantity === 'shear') {
 		for (const z of results.shearZeros) {
 			const x = X(z);
 			prims.push(linePrim('bsd-zero', x, axisY - ZERO_TICK, x, axisY + ZERO_TICK));
+			// A zero that is a jump through zero (at a support or a point load)
+			// sits on a key point the beam drawing already dimensions: keep the
+			// tick, skip the text, which would only crowd out the smooth zeros.
+			const jump = Math.abs(evaluateAt(results.segments, 'V', z, 'left') - evaluateAt(results.segments, 'V', z, 'right'));
+			if (jump > zeroTol) continue;
 			// Try the empty quadrants first: when V comes down through zero the
 			// curve is above the axis on the left and below it on the right.
 			const leftPositive = shearPositiveLeftOf(results, z, zeroTol);
@@ -228,19 +281,20 @@ export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantit
 			const placements = leftPositive
 				? [left(below), right(above), left(above), right(below)]
 				: [left(above), right(below), left(below), right(above)];
-			candidates.push({ text: `x = ${formatQuantity(z, 'length', units, decimals)}`, cls: 'bsd-value bsd-zero', priority: 1, placements });
+			candidates.push({ text: `x = ${formatResultPosition(z, units, decimals)}`, cls: 'bsd-value bsd-zero', priority: 1, placements });
 		}
-		candidates.push(...keyPointCandidates(results, 'V', L, zeroTol, near, signed, repeatsExtreme, shownExtremes));
+		candidates.push(...keyPointCandidates(results, 'V', L, zeroTol, maxAbs, X, near, signed, valueCls, shownExtremes));
 	} else if (quantity === 'moment') {
 		// M is locally extreme where V changes sign (dM/dx = V), so these are
 		// the peak moments of each span, for example both spans of a
 		// continuous beam even though only the first counts as the maximum.
 		for (const z of results.shearZeros) {
 			const v = evaluateAt(results.segments, 'M', z, 'left');
-			if (!(Math.abs(v) > zeroTol) || repeatsExtreme(z, v)) continue;
-			candidates.push({ text: signed(v), cls: 'bsd-value', priority: 1, placements: near(z, v, ['mid', 'right', 'left'], false) });
+			if (!(Math.abs(v) > zeroTol)) continue;
+			const text = signed(v);
+			candidates.push({ text, cls: valueCls(text), priority: 1, placements: near(z, v, ['mid', 'right', 'left'], false), value: v, span: [X(z), X(z)] });
 		}
-		candidates.push(...keyPointCandidates(results, 'M', L, zeroTol, near, signed, repeatsExtreme, shownExtremes));
+		candidates.push(...keyPointCandidates(results, 'M', L, zeroTol, maxAbs, X, near, signed, valueCls, shownExtremes));
 	}
 
 	// The curve and the axis are obstacles: a label may sit inside a filled
@@ -251,7 +305,8 @@ export function buildDiagramScene(results: BeamResults, quantity: DiagramQuantit
 		const b = pts[i];
 		if (a && b) obstacles.push([a.X, a.Y, b.X, b.Y]);
 	}
-	prims.push(...placeLabels(candidates, width, obstacles), titlePrim);
+	const keyXs = results.keyPoints.map(X);
+	prims.push(...placeLabels(candidates, width, obstacles, keyXs, DUPLICATE_REL * maxAbs), titlePrim);
 
 	return { width, height: HEIGHT, title: info.sceneTitle, desc: describeDiagram(results, quantity, max, min, zeroTol, options, decimals), prims };
 }
@@ -414,6 +469,19 @@ interface Candidate {
 	placements: Placement[];
 	/** Keep the label (at its first placement) even when every placement collides. */
 	required?: boolean;
+	/** The value shown (SI), for the near-duplicate test in placeLabels. */
+	value?: number;
+	/**
+	 * Pixel range [x0, x1] of the curve the value belongs to: one point, or a
+	 * whole constant run. Needed with `value`.
+	 */
+	span?: [number, number];
+	/**
+	 * A key-point value: its box must not cover another key point (outside
+	 * `span`), where it would read as that point's value. Extremes and shear
+	 * zeros may: their text says where they are, or they are required.
+	 */
+	stayOnSpan?: boolean;
 }
 
 /**
@@ -441,55 +509,74 @@ function around(x: number, y: number, outsideUp: boolean, sides: Side[], inside:
  * Values at key points (supports, point loads, load ends, beam ends). Where
  * the value jumps, the left limit is written left of the step and the right
  * limit right of it; otherwise one label goes next to the point, on whichever
- * side the curve leaves free.
+ * side the curve leaves free. A jump smaller than DUPLICATE_REL of the
+ * largest magnitude gets one label, like no jump: two nearly equal numbers
+ * side by side would only clutter.
  *
- * A segment where the value is constant (V between point loads, M under a
- * pure couple) gets ONE label for the whole step, tried at its start, its
- * end and its middle, instead of the same number at both ends. Zero values
- * are skipped (they sit on the axis), and so are repeats of an extreme
- * label: `skip` for values next to an extreme, and constant segments that
- * contain an extreme of the same value.
+ * A run of constant segments with one value (V between point loads, M
+ * under a pure couple, also when a couple splits the run into two segments)
+ * gets ONE label for the whole step, tried at its start, its end and its
+ * middle, instead of the same number at every key point. Zero values are
+ * skipped (they sit on the axis), and so are runs that contain an extreme of
+ * the same value; repeats of a nearby label are dropped in placeLabels.
  */
 function keyPointCandidates(
 	results: BeamResults,
 	field: SegmentField,
 	L: number,
 	zeroTol: number,
+	maxAbs: number,
+	X: (x: number) => number,
 	near: (x: number, v: number, sides: Side[], inside: boolean) => Placement[],
 	signed: (v: number) => string,
-	skip: (x: number, v: number) => boolean,
+	valueCls: (text: string) => string,
 	extremes: readonly Extremum[],
 ): Candidate[] {
 	const out: Candidate[] = [];
 	const eps = POSITION_TOL * L;
 	const segments = results.segments;
 	const meaningful = (v: number | undefined): v is number => v !== undefined && Math.abs(v) > zeroTol;
+	const candidate = (v: number, x0: number, x1: number, placements: Placement[]): Candidate => {
+		const text = signed(v);
+		return { text, cls: valueCls(text), priority: 2, placements, value: v, span: [X(x0), X(x1)], stayOnSpan: true };
+	};
 
-	// Constant segments: equal values at both ends and in the middle (V is at
-	// most quadratic, M at most cubic, so three equal samples mean constant
-	// unless the polynomial wiggles, which loads of degree <= 1 cannot cause).
+	// Constant segments: every non-constant term is negligible over the
+	// segment, sum |c_i| len^i <= zeroTol for i >= 1 (s runs from 0 to len).
+	// Testing coefficients, not a few samples: a cubic M can take the same
+	// value at both ends and in the middle and still bulge in between.
 	const constant = segments.map((seg) => {
 		const p = seg[field];
 		if (!p) return false;
 		const len = seg.x1 - seg.x0;
-		const v0 = polyEval(p, 0);
-		return Math.abs(polyEval(p, len) - v0) <= zeroTol && Math.abs(polyEval(p, 0.5 * len) - v0) <= zeroTol;
+		let drift = 0;
+		for (let i = 1; i < p.length; i++) drift += Math.abs(p[i] ?? 0) * Math.pow(len, i);
+		return drift <= zeroTol;
 	});
 
-	segments.forEach((seg, i) => {
-		const p = seg[field];
-		if (!constant[i] || !p) return;
+	// Runs of consecutive constant segments with the same value.
+	for (let i = 0; i < segments.length; ) {
+		const p = segments[i]?.[field];
+		if (!constant[i] || !p) {
+			i++;
+			continue;
+		}
 		const v = polyEval(p, 0);
-		if (!meaningful(v)) return;
-		const covered = extremes.some((e) => e.x >= seg.x0 - eps && e.x <= seg.x1 + eps && Math.abs(e.value - v) <= zeroTol);
-		if (covered) return;
-		const placements = [...near(seg.x0, v, ['right'], false), ...near(seg.x1, v, ['left'], false), ...near(0.5 * (seg.x0 + seg.x1), v, ['mid'], true)];
-		out.push({ text: signed(v), cls: 'bsd-value', priority: 2, placements });
-	});
+		let j = i;
+		while (j + 1 < segments.length && constant[j + 1] === true && Math.abs(polyEval(segments[j + 1]?.[field] ?? [0], 0) - v) <= zeroTol) j++;
+		const x0 = segments[i]?.x0 ?? 0;
+		const x1 = segments[j]?.x1 ?? x0;
+		i = j + 1;
+		if (!meaningful(v)) continue;
+		const covered = extremes.some((e) => e.x >= x0 - eps && e.x <= x1 + eps && Math.abs(e.value - v) <= zeroTol);
+		if (covered) continue;
+		const placements = [...near(x0, v, ['right'], false), ...near(x1, v, ['left'], false), ...near(0.5 * (x0 + x1), v, ['mid'], true)];
+		out.push(candidate(v, x0, x1, placements));
+	}
 
 	const add = (v: number | undefined, x: number, sides: Side[]): void => {
-		if (!meaningful(v) || skip(x, v)) return;
-		out.push({ text: signed(v), cls: 'bsd-value', priority: 2, placements: near(x, v, sides, true) });
+		if (!meaningful(v)) return;
+		out.push(candidate(v, x, x, near(x, v, sides, true)));
 	};
 	results.keyPoints.forEach((k, j) => {
 		// Key point j ends segment j - 1 and starts segment j.
@@ -503,6 +590,11 @@ function keyPointCandidates(
 			// No jump: a constant neighbour already labels this value.
 			if (leftConstant || rightConstant) return;
 			add(right ?? left, k, ['mid', 'left', 'right']);
+		} else if (Math.abs(left - right) <= DUPLICATE_REL * maxAbs) {
+			// A tiny jump: one label, unless a constant neighbour already shows
+			// (nearly) this value.
+			if (leftConstant || rightConstant) return;
+			add(right, k, ['mid', 'left', 'right']);
 		} else {
 			if (!leftConstant) add(left, k, ['left']);
 			if (!rightConstant) add(right, k, ['right']);
@@ -547,30 +639,55 @@ export function segmentHitsBox(seg: Segment2, box: Box): boolean {
 
 /**
  * Greedy collision avoidance: candidates are placed by priority (extremes,
- * then shear zeros, then key-point values), each trying its placements in
- * order. A placement is free when it stays inside the drawing below the
- * title band, overlaps no label placed before, and is not crossed by the
- * curve or the axis. A label with no free placement is dropped, except
- * required ones (extremes), which take their first placement anyway: losing
- * the peak value would be worse than a tight fit.
+ * then shear zeros and span peaks, then key-point values), each trying its
+ * placements in order. A placement is free when it stays inside the drawing
+ * below the title band, overlaps no label placed before, is not crossed by
+ * the curve or the axis, and, for a key-point value (`stayOnSpan`), covers
+ * no other key point of `keyXs` [px], where it would read as that point's
+ * value. A label with no free placement is dropped, except required ones
+ * (extremes), which take their first placement anyway: losing the peak value
+ * would be worse than a tight fit.
+ *
+ * A value within `duplicateTol` (SI) of an accepted label's value, whose
+ * curve span is within DUPLICATE_PX of that label's, is dropped as a repeat.
  */
-function placeLabels(candidates: Candidate[], width: number, obstacles: readonly Segment2[]): Prim[] {
+function placeLabels(candidates: Candidate[], width: number, obstacles: readonly Segment2[], keyXs: readonly number[], duplicateTol: number): Prim[] {
 	const sorted = candidates.map((c, i) => ({ c, i })).sort((a, b) => a.c.priority - b.c.priority || a.i - b.i);
 	const accepted: PlacedText[] = [];
+	const acceptedValues: { value: number; span: [number, number] }[] = [];
 	const prims: Prim[] = [];
-	const free = (placed: PlacedText): boolean =>
-		placed.box.y0 >= TITLE_BASELINE + 3 &&
+	/** Pixel gap between two spans (0 when they overlap). */
+	const spanGap = (a: [number, number], b: [number, number]): number => Math.max(0, a[0] - b[1], b[0] - a[1]);
+	const repeats = (c: Candidate): boolean =>
+		c.value !== undefined &&
+		c.span !== undefined &&
+		acceptedValues.some((o) => Math.abs(o.value - (c.value ?? 0)) <= duplicateTol && spanGap(o.span, c.span ?? o.span) <= DUPLICATE_PX);
+	const free = (c: Candidate, placed: PlacedText): boolean =>
+		placed.box.y0 >= TITLE_BASELINE + TITLE_CLEARANCE &&
 		placed.box.y1 <= HEIGHT &&
 		!accepted.some((other) => boxesOverlap(placed.box, other.box, LABEL_GAP)) &&
-		!obstacles.some((seg) => segmentHitsBox(seg, placed.box));
+		!obstacles.some((seg) => segmentHitsBox(seg, placed.box)) &&
+		!(c.stayOnSpan && c.span && coversOtherKeyPoint(placed.box, c.span, keyXs));
 	for (const { c } of sorted) {
+		if (!c.required && repeats(c)) continue;
 		const options = c.placements.map((p) => placeText(p.x, p.y, c.text, LAYOUT.smallFontSize, width, p.anchor));
-		const chosen = options.find(free) ?? (c.required ? options[0] : undefined);
+		const chosen = options.find((o) => free(c, o)) ?? (c.required ? options[0] : undefined);
 		if (!chosen) continue;
 		accepted.push(chosen);
+		if (c.value !== undefined && c.span) acceptedValues.push({ value: c.value, span: c.span });
 		prims.push(textPrim(c.cls, chosen, c.text));
 	}
 	return prims;
+}
+
+/**
+ * True when a key point outside `span` (by more than 1 px) lies inside the
+ * box, more than 2 px from its edges: a label there sits over that point's
+ * guide and reads as its value (the "+30.16" of x = 1.4 m drawn across the
+ * x = 1.2 m guide).
+ */
+function coversOtherKeyPoint(box: Box, span: [number, number], keyXs: readonly number[]): boolean {
+	return keyXs.some((kx) => (kx < span[0] - 1 || kx > span[1] + 1) && kx > box.x0 + 2 && kx < box.x1 - 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +707,7 @@ function describeDiagram(
 	const units = options.units;
 	const dim = QUANTITIES[quantity].dimension;
 	const q = (v: number): string => formatQuantity(v, dim, units, decimals);
-	const at = (x: number): string => formatQuantity(x, 'length', units, decimals);
+	const at = (x: number): string => formatResultPosition(x, units, decimals);
 	const meaningful = (e: Extremum): boolean => Math.abs(e.value) > zeroTol;
 
 	if (quantity === 'shear') {

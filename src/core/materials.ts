@@ -27,7 +27,7 @@ export const MATERIALS: Record<MaterialId, MaterialPreset> = {
 		id: 'aluminium',
 		label: 'Aluminium alloy 6061-T6',
 		E: 68.9e9,
-		source: 'ASM / Aluminum Design Manual (10,000 ksi); EN 1999-1-1 uses 70 GPa',
+		source: 'ASM: 68.9 GPa (10,000 ksi); Aluminum Design Manual: 10,100 ksi; EN 1999-1-1: 70 GPa',
 	},
 	timber: {
 		id: 'timber',

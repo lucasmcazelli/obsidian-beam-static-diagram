@@ -26,3 +26,7 @@ coverage
 
 # Python bytecode from the dev-only oracle script
 __pycache__/
+
+# Output of the dev-only browser preview (npm run preview).
+# Anchored to the root so scripts/preview/ (the tool itself) is not ignored.
+/preview/

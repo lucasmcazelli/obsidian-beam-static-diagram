@@ -14,8 +14,17 @@ export default defineConfig({
 		},
 		coverage: {
 			provider: 'v8',
-			include: ['src/core/**/*.ts', 'src/render/**/*.ts'],
+			// The whole plugin, UI glue included (tests/ui-smoke.test.ts drives it in happy-dom).
+			include: ['src/**/*.ts'],
 			reporter: ['text', 'html'],
+			// Floors a little below the current figures (about 98% statements, 91.5% branches,
+			// 99.5% functions, 99.4% lines), so CI fails when new code lands without tests.
+			thresholds: {
+				statements: 97,
+				branches: 90,
+				functions: 98,
+				lines: 98,
+			},
 		},
 	},
 });

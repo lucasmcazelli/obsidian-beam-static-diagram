@@ -123,13 +123,28 @@ function props(shape: SectionShape, dims: number[], I: number, c: number, area: 
  * slightly underestimates rolled sections: IPE 300 (150 x 300 x 7.1 x 10.7)
  * gives 7999 cm^4 against the catalogue 8356 cm^4 (about 4.3% less). For
  * rolled profiles, enter the catalogue value with `I` instead.
+ *
+ * Dimensions near the limits of double precision can overflow I (it grows
+ * with the fourth power of the size) to Infinity or underflow it to 0, which
+ * would silently disable deflection or print "I = Infinity"; such results
+ * are returned as an error instead.
  */
 export function computeSection(shape: SectionShape, dims: number[]): SectionProps | { error: string } {
 	if (dims.length !== SECTION_SHAPES[shape].dims.length) return { error: dimensionCountMessage(shape) };
 	if (dims.some((d) => !Number.isFinite(d) || d <= 0)) {
 		return { error: 'Section dimensions must be greater than zero' };
 	}
+	const result = shapeProps(shape, dims);
+	if ('error' in result) return result;
+	const usable = (v: number): boolean => Number.isFinite(v) && v > 0;
+	if (!usable(result.I) || !usable(result.area)) {
+		return { error: 'The section properties cannot be computed for these dimensions: check their size and unit' };
+	}
+	return result;
+}
 
+/** The formulas of computeSection, for dimensions already checked to be positive and finite. */
+function shapeProps(shape: SectionShape, dims: number[]): SectionProps | { error: string } {
 	switch (shape) {
 		case 'rect': {
 			const [b = 0, h = 0] = dims;

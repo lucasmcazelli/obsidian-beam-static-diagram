@@ -28,11 +28,12 @@ jobs:
             - name: Install dependencies
               run: npm ci
 
-            - name: Lint (zero warnings, same rules as the community directory scanner and stricter)
+            - name: Lint (zero warnings)
               run: npm run lint -- --max-warnings=0
 
-            - name: Unit tests
-              run: npm test
+            # Runs the whole test suite once and fails below the thresholds in vitest.config.mts.
+            - name: Unit tests with coverage thresholds
+              run: npm run coverage
 
             - name: Production build
               run: npm run build

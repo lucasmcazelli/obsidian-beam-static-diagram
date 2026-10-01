@@ -46,11 +46,14 @@ export default defineConfig(
 		rules: {
 			// Engineering unit symbols are not sentence-case violations.
 			// ignoreWords ADDS to the defaults (brands/acronyms would replace them).
+			// "E" and "I" are deliberately NOT listed: the community scanner runs
+			// the stock config without these words, so local lint must flag the
+			// same strings (write "elastic modulus" / "second moment of area").
 			'obsidianmd/ui/sentence-case': [
 				'warn',
 				{
 					enforceCamelCaseLower: true,
-					ignoreWords: ['kN', 'kNm', 'kip', 'ksi', 'psi', 'MPa', 'GPa', 'kPa', 'Pa', 'N', 'mm', 'cm', 'm', 'ft', 'in', 'lb', 'EI', 'E', 'I', 'SI', 'L'],
+					ignoreWords: ['kN', 'kNm', 'kip', 'ksi', 'psi', 'MPa', 'GPa', 'kPa', 'Pa', 'N', 'mm', 'cm', 'm', 'ft', 'in', 'lb', 'EI', 'SI', 'L'],
 				},
 			],
 		},

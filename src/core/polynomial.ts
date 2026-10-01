@@ -61,10 +61,12 @@ export function polyIntegrate(p: Poly, c0 = 0): Poly {
  * - A double root (p touches zero at a critical point) is reported when |p| is
  *   at round-off level there.
  * - The identically zero polynomial returns [] (it has no isolated roots).
+ * - The coefficients are first scaled by a power of two (see
+ *   normalizeScale), so the result does not depend on their magnitude.
  */
 export function polyRootsInInterval(p: Poly, a: number, b: number): number[] {
 	if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return [];
-	const c = trimTrailingZeros(p);
+	const c = trimTrailingZeros(normalizeScale(p));
 	const degree = c.length - 1;
 	if (degree <= 0) return [];
 
@@ -86,6 +88,30 @@ export function polyRootsInInterval(p: Poly, a: number, b: number): number[] {
 		if (last === undefined || r - last > tol) out.push(r);
 	}
 	return out;
+}
+
+/**
+ * Returns p scaled by a power of two so that its largest coefficient is
+ * about 1 (p itself when it is zero or not finite). The roots are the same,
+ * but the quadratic formula no longer squares coefficients beyond 1e154
+ * (c1² overflows to Infinity, the discriminant becomes NaN) or below 1e-154
+ * (c1² underflows to 0 and every quadratic looks like a double root). An
+ * extreme E (1e200 Pa, or 1e-150 Pa) puts the slope polynomial in that
+ * range, and the deflection extreme of a simply supported beam then came
+ * out 5 % low and at the wrong position.
+ * Multiplying by a power of two is exact, so for ordinary coefficients every
+ * root is bit for bit what it was without the scaling.
+ */
+function normalizeScale(p: Poly): Poly {
+	let max = 0;
+	for (const c of p) max = Math.max(max, Math.abs(c));
+	if (!(max > 0 && Number.isFinite(max))) return p;
+	// Clamped so the factor itself stays a normal double (2^±1022). The
+	// caller trims afterwards: a negligible leading term may underflow to 0.
+	const exponent = Math.max(-1022, Math.min(1022, -Math.round(Math.log2(max))));
+	if (exponent === 0) return p;
+	const factor = 2 ** exponent;
+	return p.map((c) => c * factor);
 }
 
 /** Drops exactly-zero highest-order coefficients so the degree is the true degree. */

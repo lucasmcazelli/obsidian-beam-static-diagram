@@ -27,8 +27,8 @@ import type {
 	SupportKind,
 } from './types';
 import { dimensionCountMessage, findSectionShape, SECTION_SHAPE_ALIASES, SECTION_SHAPES } from './sections';
-import { ownValue } from './lookup';
-import { isUnitSymbol, lookupUnit, parseUnitSystem, UNIT_HINTS } from './units';
+import { clipText, ownValue } from './lookup';
+import { commaNumberMessage, DASH_MINUS_MESSAGE, isUnitSymbol, lookupUnit, parseUnitSystem, UNIT_HINTS } from './units';
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -63,10 +63,18 @@ const LETTER = /^\p{L}$/u;
 const WHITESPACE = /^\s$/;
 /** Superscript digits used in units such as cm⁴ and N/mm². */
 const SUPERSCRIPTS = '²³⁴';
-/** Characters that may join two parts of a unit: kN/m, kN·m, kN*m, kN-m, kN.m. */
-const CONNECTORS = '/·⋅*-.';
+/** Characters that may join two parts of a unit: kN/m, kN·m, kN⋅m, kN•m, kN*m, kN-m, kN.m (unitKey strips the same set). */
+const CONNECTORS = '/·⋅•*-.';
 /** Signs accepted in front of a number, including the Unicode minus U+2212. */
 const SIGNS = '+-\u2212';
+/** Typographic dashes (en dash U+2013, em dash U+2014) that word processors put where "-" was meant. */
+const DASHES = '\u2013\u2014';
+/**
+ * Invisible characters copied from web pages and PDFs (zero-width space,
+ * joiners, word joiner, byte order mark, soft hyphen). They would split or
+ * glue tokens without the user being able to see why, so they are removed.
+ */
+const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
 
 function isDigit(ch: string | undefined): boolean {
 	return ch !== undefined && ch >= '0' && ch <= '9';
@@ -162,16 +170,22 @@ export function tokenizeLine(text: string): TokenizeResult {
 		if (numberStartsAt(text, i)) {
 			const end = scanNumber(text, i);
 			if (text[end] === ',' && isDigit(text[end + 1])) {
-				let k = end + 1;
-				while (isDigit(text[k])) k++;
-				return {
-					tokens,
-					error: { message: `Invalid number "${text.slice(i, k)}": use a dot as the decimal separator`, start: i },
-				};
+				// Take every ",digits" group so "1,000,000" is quoted whole.
+				let k = end;
+				while (text[k] === ',' && isDigit(text[k + 1])) {
+					k++;
+					while (isDigit(text[k])) k++;
+				}
+				return { tokens, error: { message: commaNumberMessage(text.slice(i, k)), start: i } };
 			}
 			tokens.push({ kind: 'number', text: text.slice(i, end), start: i, end });
 			i = end;
 			continue;
+		}
+		if (DASHES.includes(ch) && (isDigit(text[i + 1]) || (text[i + 1] === '.' && isDigit(text[i + 2])))) {
+			// A dash right after a number is a range ("0–6"); anything else is a minus sign.
+			const message = tokens[tokens.length - 1]?.kind === 'number' ? 'Write a range with "from" and "to", for example: from 0 to 6 m' : DASH_MINUS_MESSAGE;
+			return { tokens, error: { message, start: i } };
 		}
 		if (ch === '×' || ch === '*' || isGluedSeparator(text, i)) {
 			tokens.push({ kind: 'sep', text: ch, start: i, end: i + 1 });
@@ -237,6 +251,10 @@ export function suggest(word: string, candidates: readonly string[], maxDistance
 	let best: string | undefined;
 	let bestDistance = Infinity;
 	for (const candidate of candidates) {
+		// The edit distance is at least the length difference, so such a
+		// candidate can never be within the limit. Skipping it also keeps a
+		// pasted 100k-character word from building huge distance tables.
+		if (Math.abs(w.length - candidate.length) > limit) continue;
 		const distance = editDistance(w, candidate.toLowerCase());
 		if (distance < bestDistance) {
 			best = candidate;
@@ -288,6 +306,12 @@ const KEYWORDS: Record<string, StatementType> = {
 	e: 'E',
 	i: 'I',
 	// Aliases
+	// Textbooks and catalogues name the second moment of area after its axis.
+	// The beam bends about the horizontal axis whatever its name, so the user
+	// picks which catalogue value applies (strong or weak axis).
+	ix: 'I',
+	iy: 'I',
+	iz: 'I',
 	unit: 'units',
 	span: 'length',
 	l: 'length',
@@ -304,8 +328,44 @@ const KEYWORDS: Record<string, StatementType> = {
 	varying: 'linear',
 };
 
-/** Keywords offered as "Did you mean" suggestions (single letters would match almost anything). */
-const SUGGESTABLE_KEYWORDS = Object.keys(KEYWORDS).filter((k) => k.length >= 3);
+/**
+ * Keywords offered as "Did you mean" suggestions. Single and two-letter
+ * aliases would match almost anything, and "fix" (still accepted) is left
+ * out because two-letter typos such as "Ix" or "if" would map to a fixed
+ * support.
+ */
+const SUGGESTABLE_KEYWORDS = Object.keys(KEYWORDS).filter((k) => k.length >= 3 && k !== 'fix');
+
+/**
+ * Words that start a statement, used to spot two statements written on one
+ * line ("pin at 0 roller at 6"). "load" is left out because it also appears
+ * inside load statements ("point load 10 kN"), and the one and two-letter
+ * aliases (e, i, l, ix) because they collide with units and typos.
+ */
+const STATEMENT_WORDS: ReadonlySet<string> = new Set(Object.keys(KEYWORDS).filter((k) => k.length >= 3 && k !== 'load'));
+
+/** Message for a statement keyword found inside another statement. */
+function oneStatementPerLine(word: string): string {
+	return `Unexpected "${clipText(word)}": write one statement per line`;
+}
+
+/**
+ * First words that are not statements but have an obvious meaning, with a
+ * better message than the generic "Unknown statement" and, when the line
+ * was meant as a statement, which one (used by guessStatementType so that
+ * analyzeBeam drops the follow-on messages of the broken line).
+ */
+const STATEMENT_HINTS: Record<string, { message: (word: string) => string; type?: StatementType }> = {
+	// A cantilever's free end is natural to describe, but needs no statement.
+	free: { message: () => 'A free end needs no statement: delete this line' },
+	// "M 5 kNm cw at 3": a single "m" is too short for the general suggestions.
+	m: { message: (word) => `Unknown statement "${word}". Did you mean "moment"?`, type: 'moment' },
+	// Textbooks often give the flexural rigidity EI directly.
+	ei: {
+		message: () => 'Give E and I separately, for example: E 200 GPa on one line and I 8000 cm^4 on the next',
+		type: 'E',
+	},
+};
 
 const SUPPORT_KINDS: Record<string, SupportKind> = {
 	pin: 'pin',
@@ -351,6 +411,8 @@ const POSITION_KEYWORDS: Record<string, 'start' | 'mid' | 'end'> = {
 	start: 'start',
 	left: 'start',
 	mid: 'mid',
+	midspan: 'mid',
+	'mid-span': 'mid',
 	middle: 'mid',
 	center: 'mid',
 	centre: 'mid',
@@ -360,15 +422,25 @@ const POSITION_KEYWORDS: Record<string, 'start' | 'mid' | 'end'> = {
 
 /**
  * Resolves a position keyword, case-insensitive: "start"/"left" (x = 0),
- * "mid"/"middle"/"center"/"centre" (x = L/2), "end"/"right" (x = L).
+ * "mid"/"midspan"/"middle"/"center"/"centre" (x = L/2), "end"/"right" (x = L).
  * Returns undefined for anything else (for example a quantity such as "2 m").
  */
 export function positionKeyword(text: string): 'start' | 'mid' | 'end' | undefined {
 	return ownValue(POSITION_KEYWORDS, text.trim().toLowerCase());
 }
 
+/** Direction words of forces and couples. */
+const DIRECTION_WORDS = [...Object.keys(FORCE_DIRECTIONS), ...Object.keys(MOMENT_DIRECTIONS)];
+
 /** Words that may follow a number inside a load statement (used to tell a typo from an unknown unit). */
-const CLAUSE_WORDS = ['at', 'from', 'to', ...Object.keys(FORCE_DIRECTIONS), ...Object.keys(MOMENT_DIRECTIONS), ...Object.keys(POSITION_KEYWORDS)];
+const CLAUSE_WORDS = ['at', 'from', 'to', ...DIRECTION_WORDS, ...Object.keys(POSITION_KEYWORDS)];
+
+/**
+ * Words people use to give the extent of a distributed load in prose ("udl 5
+ * kN/m between 0 and 6", "over the whole beam"). They are not units; the load
+ * reader explains the "from ... to ..." syntax instead.
+ */
+const RANGE_WORDS: ReadonlySet<string> = new Set(['between', 'over', 'on', 'along']);
 
 // ---------------------------------------------------------------------------
 // Line parsing helpers
@@ -377,10 +449,41 @@ const CLAUSE_WORDS = ['at', 'from', 'to', ...Object.keys(FORCE_DIRECTIONS), ...O
 /** Internal: aborts the current line with a message. Caught in parseBeamSource. */
 class LineError extends Error {}
 
+/**
+ * A specific hint for a token that cannot continue the statement, given the
+ * tokens around it, or undefined when nothing specific applies. Covers the
+ * usual ways of writing numbers that the language does not read ("200 000",
+ * "2.1 × 10^5", "1/3", "2 ft 6 in", "20'") and two statements on one line.
+ */
+function tokenHint(t: Token, prev: Token | undefined, next: Token | undefined): string | undefined {
+	const word = wordOf(t);
+	if (t.text === ',' || t.text === ';' || STATEMENT_WORDS.has(word)) return oneStatementPerLine(t.text);
+	if (word === 'and' && next !== undefined && STATEMENT_WORDS.has(wordOf(next))) return oneStatementPerLine(t.text);
+	if (prev?.kind === 'number') {
+		// "200 000": digit groups separated by spaces.
+		if (t.kind === 'number' && /^\d{3}$/.test(t.text)) return `Write numbers without spaces, for example ${prev.text}${t.text}`;
+		// "2.1 × 10^5", "2.1*10^5", "8 x 10^-5".
+		if ((t.kind === 'sep' || t.text === '·') && next?.kind === 'number' && next.text === '10') {
+			return 'Write powers of ten with "e", for example 2.1e5 for 2.1 × 10^5';
+		}
+		if (t.text === '/') return 'Fractions are not supported: write a decimal number, for example 2.5';
+		if (t.text === "'" || t.text === '′') return `Write the unit as ft, for example ${prev.text} ft`;
+		if (t.text === '"' || t.text === '″') return `Write the unit as in, for example ${prev.text} in`;
+	}
+	if (prev?.kind === 'word') {
+		// "kN / m": a unit written with spaces.
+		if (t.text === '/') return 'Write the unit without spaces, for example kN/m';
+		// "2 ft 6 in": feet and inches.
+		if (t.kind === 'number' && lookupUnit(prev.text)?.cls === 'length') {
+			return 'Write one number with one unit, for example 2.5 ft rather than 2 ft 6 in';
+		}
+	}
+	return undefined;
+}
+
 /** Message for a token left over after a complete statement. */
-function unexpectedMessage(t: Token): string {
-	if (t.text === ',' || t.text === ';') return `Unexpected "${t.text}": write one statement per line`;
-	return `Unexpected "${t.text}" at the end of the line`;
+function unexpectedMessage(t: Token, prev?: Token, next?: Token): string {
+	return tokenHint(t, prev, next) ?? `Unexpected "${clipText(t.text)}": the statement is already complete`;
 }
 
 /** Reads tokens of one line from left to right. */
@@ -409,10 +512,18 @@ class Cursor {
 		return t !== undefined && t.kind === 'word' && t.text.toLowerCase() === word;
 	}
 
+	/** The tokens just before and after the current one, for context-aware messages. */
+	around(): { prev: Token | undefined; next: Token | undefined } {
+		return { prev: this.tokens[this.pos - 1], next: this.tokens[this.pos + 1] };
+	}
+
 	/** Fails when tokens remain. */
 	expectEnd(): void {
 		const t = this.peek();
-		if (t) throw new LineError(unexpectedMessage(t));
+		if (t) {
+			const { prev, next } = this.around();
+			throw new LineError(unexpectedMessage(t, prev, next));
+		}
 	}
 }
 
@@ -424,6 +535,12 @@ function isAt(t: Token): boolean {
 /** Lower-cased text of a word token, or "" for other tokens. */
 function wordOf(t: Token): string {
 	return t.kind === 'word' ? t.text.toLowerCase() : '';
+}
+
+/** True for a token that starts a load clause: "at", "@", "from", "to" or a direction word. */
+function startsClause(t: Token): boolean {
+	const w = wordOf(t);
+	return isAt(t) || w === 'from' || w === 'to' || DIRECTION_WORDS.includes(w);
 }
 
 /** True for words built like a unit: "kN/mm", "cm^4", "kN·m", "m2". */
@@ -438,11 +555,19 @@ function looksLikeUnit(word: string): boolean {
  * stays a separate token. "5 kN m" (force and length written apart) is joined
  * into one moment unit.
  *
- * A word that is not a unit is reported as an unknown unit when it is glued
- * to the number ("10kNN"), is built like a unit ("kN/mmm"), or sits between
- * the number and the rest of the statement without resembling a statement
- * word ("10 tons at 2"). A plain last word ("pin at 0 foo") is left for the
- * statement to report as unexpected.
+ * A word that is not a unit is reported as:
+ * - "write one statement per line" when it is a statement keyword
+ *   ("pin at 0 roller at 6");
+ * - nothing here when it is a range word ("udl 5 over the whole beam"), which
+ *   the load reader explains;
+ * - an unknown unit when it is glued to the number ("10kNN"), is built like a
+ *   unit ("kN/mmm"), sits between the number and the rest of the statement
+ *   without resembling a statement word ("10 tons foo"), or stands right
+ *   before a clause ("10 t at 2"; "at", "from", "to" or a direction follows,
+ *   so the word is in the unit's place) without being a misspelt direction
+ *   ("10 dwn at 2" is left for the "Did you mean" message).
+ * A plain last word ("pin at 0 foo") is left for the statement to report as
+ * unexpected.
  */
 function readQuantity(p: Cursor, missingMessage: string, dimension: Dimension): string {
 	const t = p.peek();
@@ -460,10 +585,16 @@ function readQuantity(p: Cursor, missingMessage: string, dimension: Dimension): 
 				end = u2.end;
 			}
 		} else {
+			const word = u.text.toLowerCase();
 			const glued = u.start === t.end;
-			const midStatement = p.tokens[p.pos + 1] !== undefined && suggest(u.text, CLAUSE_WORDS, 1) === undefined;
-			if (glued || looksLikeUnit(u.text) || midStatement) {
-				throw new LineError(`Unknown unit "${u.text}": use ${UNIT_HINTS[dimension]}`);
+			if (!glued && STATEMENT_WORDS.has(word)) throw new LineError(oneStatementPerLine(u.text));
+			if (glued || !RANGE_WORDS.has(word)) {
+				const next = p.tokens[p.pos + 1];
+				const midStatement = next !== undefined && suggest(u.text, CLAUSE_WORDS, 1) === undefined;
+				const beforeClause = next !== undefined && startsClause(next) && suggest(u.text, DIRECTION_WORDS, 1) === undefined;
+				if (glued || looksLikeUnit(u.text) || midStatement || beforeClause) {
+					throw new LineError(`Unknown unit "${clipText(u.text)}": use ${UNIT_HINTS[dimension]}`);
+				}
 			}
 		}
 	}
@@ -478,8 +609,16 @@ function readPosition(p: Cursor, keyword: string): string {
 			p.next();
 			return t.text;
 		}
+		// Textbook notation: "at L" for the end, "at L/2" for midspan.
+		if (t.text === 'L' || t.text === 'l') {
+			const slash = p.tokens[p.pos + 1];
+			const divisor = p.tokens[p.pos + 2];
+			if (slash?.text !== '/') throw new LineError(`Unknown position "${t.text}". Did you mean "end"?`);
+			if (divisor?.text === '2') throw new LineError(`Unknown position "${t.text}/2". Did you mean "mid"?`);
+			throw new LineError(`Fractions of the length are not supported: write the distance from the left end, for example ${keyword} 2 m`);
+		}
 		const close = suggest(t.text, Object.keys(POSITION_KEYWORDS));
-		if (close) throw new LineError(`Unknown position "${t.text}". Did you mean "${close}"?`);
+		if (close) throw new LineError(`Unknown position "${clipText(t.text)}". Did you mean "${close}"?`);
 	}
 	if (t && t.kind === 'number') return readQuantity(p, '', 'length');
 	throw new LineError(`Expected a position after "${keyword}", for example: ${keyword} 2 m or ${keyword} end`);
@@ -497,16 +636,26 @@ function expectAt(p: Cursor): void {
 
 type LoadKind = AstLoad['kind'];
 
-/** Optional parts of a load statement, in any order after the magnitude. */
+/**
+ * Optional parts of a load statement, in any order after the magnitude.
+ * The direction is typed per load kind, so no cast is needed when the AST
+ * load is built: `force` for point and distributed loads, `moment` for couples.
+ */
 interface LoadClauses {
-	direction?: string;
+	force?: ForceDirection;
+	moment?: MomentDirection;
 	at?: string;
 	from?: string;
 	to?: string;
 }
 
 /** Message for a token that fits nowhere in a load statement. */
-function unexpectedInLoad(t: Token, kind: LoadKind, clauses: LoadClauses): string {
+function unexpectedInLoad(p: Cursor, t: Token, kind: LoadKind, clauses: LoadClauses): string {
+	const distributed = kind === 'udl' || kind === 'linear';
+	const { prev, next } = p.around();
+	const hint = tokenHint(t, prev, next);
+	if (hint) return hint;
+	if (distributed && RANGE_WORDS.has(wordOf(t))) return 'Use "from 0 to 6 m", or leave it out to load the whole beam';
 	const words =
 		kind === 'moment'
 			? ['at', ...Object.keys(MOMENT_DIRECTIONS)]
@@ -514,11 +663,15 @@ function unexpectedInLoad(t: Token, kind: LoadKind, clauses: LoadClauses): strin
 				? ['at', 'down', 'up']
 				: ['from', 'to', 'down', 'up'];
 	const close = t.kind === 'word' ? suggest(t.text, words) : undefined;
-	if (close) return `Unexpected "${t.text}". Did you mean "${close}"?`;
+	if (close) return `Unexpected "${clipText(t.text)}". Did you mean "${close}"?`;
 	// A stray token before the position usually means the "at" was forgotten: "point 10 kN 2 m".
 	if ((kind === 'point' || kind === 'moment') && clauses.at === undefined) return 'Expected "at" followed by a position';
-	if (kind === 'moment' && clauses.direction === undefined) return 'Moment needs a direction: cw or ccw';
-	return unexpectedMessage(t);
+	if (kind === 'moment' && clauses.moment === undefined) return 'Moment needs a direction: cw or ccw';
+	// "udl 5 kN/m 0 to 6": the "from" was forgotten.
+	if (distributed && t.kind === 'number' && clauses.from === undefined) {
+		return 'Expected "from" before the start position, for example: from 0 to 6 m';
+	}
+	return unexpectedMessage(t, prev, next);
 }
 
 /**
@@ -539,8 +692,9 @@ function readLoadClauses(p: Cursor, kind: LoadKind): LoadClauses {
 		if (force || moment) {
 			if (isMoment && force) throw new LineError('Moment needs a direction: cw or ccw');
 			if (!isMoment && moment) throw new LineError('Use down or up for the direction of a force or distributed load');
-			if (out.direction !== undefined) throw new LineError('The direction is given twice: keep only one');
-			out.direction = force ?? moment;
+			if (out.force !== undefined || out.moment !== undefined) throw new LineError('The direction is given twice: keep only one');
+			if (force) out.force = force;
+			if (moment) out.moment = moment;
 			p.next();
 		} else if (isAt(t)) {
 			if (isDistributed) {
@@ -566,10 +720,10 @@ function readLoadClauses(p: Cursor, kind: LoadKind): LoadClauses {
 		} else if (w === 'to' && isDistributed) {
 			throw new LineError('Expected "from" before "to", for example: from 0 to 6 m');
 		} else {
-			throw new LineError(unexpectedInLoad(t, kind, out));
+			throw new LineError(unexpectedInLoad(p, t, kind, out));
 		}
 	}
-	if (isMoment && out.direction === undefined) throw new LineError('Moment needs a direction: cw or ccw');
+	if (isMoment && out.moment === undefined) throw new LineError('Moment needs a direction: cw or ccw');
 	if (!isDistributed && out.at === undefined) throw new LineError('Expected "at" followed by a position');
 	return out;
 }
@@ -585,8 +739,8 @@ function readSection(p: Cursor, line: number): AstSection {
 		const close = suggest(t.text, Object.keys(SECTION_SHAPE_ALIASES));
 		throw new LineError(
 			close
-				? `Unknown section shape "${t.text}". Did you mean "${close}"?`
-				: `Unknown section shape "${t.text}": use rect, circle, tube, box or ibeam`,
+				? `Unknown section shape "${clipText(t.text)}". Did you mean "${close}"?`
+				: `Unknown section shape "${clipText(t.text)}": use rect, circle, tube, box or ibeam`,
 		);
 	}
 	p.next();
@@ -606,7 +760,7 @@ function readSection(p: Cursor, line: number): AstSection {
 		let end = n.end;
 		const u = p.peek();
 		if (u && u.kind === 'word') {
-			if (!isUnitSymbol(u.text)) throw new LineError(`Unknown unit "${u.text}": use ${UNIT_HINTS.sectionLength}`);
+			if (!isUnitSymbol(u.text)) throw new LineError(`Unknown unit "${clipText(u.text)}": use ${UNIT_HINTS.sectionLength}`);
 			unit = u.text;
 			end = u.end;
 			p.next();
@@ -619,7 +773,8 @@ function readSection(p: Cursor, line: number): AstSection {
 			continue;
 		}
 		if (s.kind === 'number') throw new LineError(`Separate the dimensions with x, for example: ${example}`);
-		throw new LineError(unexpectedMessage(s));
+		const { prev, next } = p.around();
+		throw new LineError(unexpectedMessage(s, prev, next));
 	}
 	if (parts.length !== SECTION_SHAPES[shape].dims.length) throw new LineError(dimensionCountMessage(shape));
 	// A unit written only after the last dimension applies to all of them
@@ -630,6 +785,22 @@ function readSection(p: Cursor, line: number): AstSection {
 		return { shape, dims: parts.map((part) => part.number), unit: last.unit, line };
 	}
 	return { shape, dims: parts.map((part) => part.raw), line };
+}
+
+/** Skips an optional "load" after a load keyword: "point load 10 kN", "uniform load 5 kN/m". */
+function skipLoadWord(p: Cursor): void {
+	if (p.isWord('load')) p.next();
+}
+
+/**
+ * Skips an optional "load" after the keyword and returns the message for a
+ * missing magnitude, naming the words as typed: 'Expected a number after
+ * "point load", for example: point 10 kN at 2 m'.
+ */
+function magnitudeMessage(p: Cursor, head: Token, example: string): string {
+	const words = p.isWord('load') ? `${head.text} ${p.peek()?.text ?? ''}` : head.text;
+	skipLoadWord(p);
+	return `Expected a number after "${clipText(words)}", for example: ${example}`;
 }
 
 /**
@@ -643,15 +814,20 @@ export function guessStatementType(word: string): StatementType | undefined {
 	const lower = word.toLowerCase();
 	const exact = ownValue(KEYWORDS, lower);
 	if (exact) return exact;
+	const hint = ownValue(STATEMENT_HINTS, lower);
+	if (hint) return hint.type;
 	const close = suggest(lower, SUGGESTABLE_KEYWORDS);
 	return close === undefined ? undefined : ownValue(KEYWORDS, close);
 }
 
 /** Message for an unknown first word, with a suggestion when one is close. */
 function unknownStatementMessage(word: string): string {
+	const hint = ownValue(STATEMENT_HINTS, word.toLowerCase());
+	if (hint) return hint.message(clipText(word));
+	const shown = clipText(word);
 	const close = suggest(word, SUGGESTABLE_KEYWORDS);
-	if (close) return `Unknown statement "${word}". Did you mean "${close}"?`;
-	return `Unknown statement "${word}". Start the line with a keyword such as length, pin, roller, fixed, point, udl or moment`;
+	if (close) return `Unknown statement "${shown}". Did you mean "${close}"?`;
+	return `Unknown statement "${shown}". Start the line with a keyword such as length, pin, roller, fixed, point, udl or moment`;
 }
 
 /** Splits a line into code and comment. "#" or "//" starts a comment that runs to the end of the line. */
@@ -693,16 +869,15 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 	const rest = code.slice(restStart).trim();
 	switch (type) {
 		case 'title':
+			// parseBeamSource does not strip comments from title lines, so "#" and "//" are part of the title.
 			if (rest === '') throw new LineError('Add the title text, for example: title Simply supported beam');
 			ast.title = rest;
-			ast.lines.title = line;
 			return;
 		case 'units': {
 			if (rest === '') throw new LineError('Add a unit system, for example: units kN m');
 			const id = parseUnitSystem(rest);
-			if (!id) throw new LineError(`Unknown unit system "${rest}": use kN m, N mm, kip ft or lb in`);
+			if (!id) throw new LineError(`Unknown unit system "${clipText(rest)}": use kN m, N mm, kip ft or lb in`);
 			ast.units = id;
-			ast.lines.units = line;
 			return;
 		}
 		case 'material':
@@ -718,22 +893,32 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 	if (error) throw new LineError(error.message);
 	const p = new Cursor(tokens, code, pos);
 
+	// Every statement writes to the AST only after the whole line has been
+	// read: a line that fails must be missing from the AST (analyzeBeam relies
+	// on it), otherwise "E 200 000 MPa" would leave "200" behind and add a
+	// false "Add a unit to E" without a line number.
 	switch (type) {
-		case 'length':
-			ast.length = readQuantity(p, 'Expected a number for the length, for example: length 6 m', 'length');
+		case 'length': {
+			const value = readQuantity(p, 'Expected a number for the length, for example: length 6 m', 'length');
 			p.expectEnd();
+			ast.length = value;
 			ast.lines.length = line;
 			return;
-		case 'E':
-			ast.E = readQuantity(p, 'Expected a number for E, for example: E 200 GPa', 'modulus');
+		}
+		case 'E': {
+			const value = readQuantity(p, 'Expected a number for E, for example: E 200 GPa', 'modulus');
 			p.expectEnd();
+			ast.E = value;
 			ast.lines.E = line;
 			return;
-		case 'I':
-			ast.I = readQuantity(p, 'Expected a number for I, for example: I 8000 cm^4', 'inertia');
+		}
+		case 'I': {
+			const value = readQuantity(p, 'Expected a number for I, for example: I 8000 cm^4', 'inertia');
 			p.expectEnd();
+			ast.I = value;
 			ast.lines.I = line;
 			return;
+		}
 		case 'support':
 		case 'pin':
 		case 'roller':
@@ -763,36 +948,26 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 			return;
 		}
 		case 'point': {
-			const magnitude = readQuantity(p, 'Expected a number for the magnitude', 'force');
+			const magnitude = readQuantity(p, magnitudeMessage(p, head, 'point 10 kN at 2 m'), 'force');
 			const c = readLoadClauses(p, 'point');
-			ast.loads.push({
-				kind: 'point',
-				magnitude,
-				direction: (c.direction as ForceDirection | undefined) ?? 'down',
-				at: c.at ?? '',
-				line,
-			});
+			ast.loads.push({ kind: 'point', magnitude, direction: c.force ?? 'down', at: c.at ?? '', line });
 			return;
 		}
 		case 'moment': {
-			const magnitude = readQuantity(p, 'Expected a number for the magnitude', 'moment');
+			const magnitude = readQuantity(p, magnitudeMessage(p, head, 'moment 5 kN·m cw at 3 m'), 'moment');
 			const c = readLoadClauses(p, 'moment');
-			ast.loads.push({
-				kind: 'moment',
-				magnitude,
-				direction: (c.direction as MomentDirection | undefined) ?? 'ccw',
-				at: c.at ?? '',
-				line,
-			});
+			// readLoadClauses already requires a direction; a couple's sign must never be defaulted.
+			if (!c.moment) throw new LineError('Moment needs a direction: cw or ccw');
+			ast.loads.push({ kind: 'moment', magnitude, direction: c.moment, at: c.at ?? '', line });
 			return;
 		}
 		case 'udl': {
-			const magnitude = readQuantity(p, 'Expected a number for the magnitude', 'distributed');
+			const magnitude = readQuantity(p, magnitudeMessage(p, head, 'udl 5 kN/m from 0 to 6 m'), 'distributed');
 			const c = readLoadClauses(p, 'udl');
 			ast.loads.push({
 				kind: 'udl',
 				magnitude,
-				direction: (c.direction as ForceDirection | undefined) ?? 'down',
+				direction: c.force ?? 'down',
 				...(c.from !== undefined ? { from: c.from, to: c.to } : {}),
 				line,
 			});
@@ -800,6 +975,7 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 		}
 		case 'linear': {
 			const example = 'for example: linear 0 to 6 kN/m';
+			skipLoadWord(p);
 			const start = readQuantity(p, `Expected a number for the start value, ${example}`, 'distributed');
 			if (!p.isWord('to')) throw new LineError(`Expected "to" and the end value, ${example}`);
 			p.next();
@@ -809,7 +985,7 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 				kind: 'linear',
 				start,
 				end,
-				direction: (c.direction as ForceDirection | undefined) ?? 'down',
+				direction: c.force ?? 'down',
 				...(c.from !== undefined ? { from: c.from, to: c.to } : {}),
 				line,
 			});
@@ -828,15 +1004,30 @@ function parseStatement(code: string, line: number, ast: BeamAst, firstLines: Pa
 // Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Splits block text into lines on "\r\n", "\r" or "\n". This defines the
+ * line numbers of every diagnostic, so everything that maps a line number
+ * back to the text must split the same way.
+ */
+export function splitLines(text: string): string[] {
+	return text.split(/\r\n|\r|\n/);
+}
+
+/** A title line ("title ...", "Title: ..."), whose text is free and may contain "#" or "//". */
+const TITLE_LINE = /^\s*title(?=[\s:=]|$)/i;
+
 /** Parses block text into an AST. Never throws: problems become diagnostics with line numbers. */
 export function parseBeamSource(source: string): { ast: BeamAst; diagnostics: Diagnostic[] } {
 	const ast = emptyAst();
 	const diagnostics: Diagnostic[] = [];
 	const firstLines: Partial<Record<SingleName, number>> = {};
-	const lines = source.split(/\r\n|\r|\n/);
-	lines.forEach((text, index) => {
+	splitLines(source).forEach((raw, index) => {
 		const line = index + 1;
-		const { code, hasComment } = splitComment(text);
+		const text = raw.replace(INVISIBLE, '');
+		// A title keeps its whole text ("Beam #1", a URL with "//"), so that
+		// the editor's serialize-then-parse round trip does not truncate it.
+		// Lines that start with "#" or "//" are still comments.
+		const { code, hasComment } = TITLE_LINE.test(text) ? { code: text, hasComment: false } : splitComment(text);
 		// Trailing comments count too: the editor warns that saving drops them.
 		if (hasComment) ast.commentCount++;
 		if (code.trim() === '') return;

@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	analyzeBeam,
+	DEFLECTION_UNAVAILABLE_MESSAGE,
 	engineeringWarnings,
 	EQUILIBRIUM_MESSAGE,
 	forceScale,
+	MAX_LOADS,
+	MAX_NODES,
+	MAX_SOURCE_CHARS,
 	mergeDiagnostics,
 	NO_HORIZONTAL_RESTRAINT_MESSAGE,
 	sortDiagnostics,
-	UNSTABLE_MESSAGE,
 } from '../src/core/analyze';
+import { forceScale as forceScaleFromScale } from '../src/core/scale';
 import { BEAM_EXAMPLES, DEFAULT_BEAM_SOURCE } from '../src/core/examples';
 import type { AnalysisOutput, BeamModel, BeamResults, Diagnostic, UnitSystemId } from '../src/core/types';
 
@@ -47,6 +51,13 @@ function mulberry32(seed: number): () => number {
 }
 
 const SIMPLY_SUPPORTED = block('length 6 m', 'pin at 0', 'roller at end', 'point 10 kN down at 2 m', 'udl 4 kN/m down from 0 to 6 m');
+
+/**
+ * The solver's mechanism message. analyzeBeam passes it through from
+ * solveBeam, which owns the text; the trailing period is optional so this
+ * test does not pin the solver's punctuation.
+ */
+const UNSTABLE = /^The beam is unstable: it can move as a mechanism\. Add a support or remove a hinge\.?$/;
 
 describe('analyzeBeam on the bundled examples', () => {
 	it.each(BEAM_EXAMPLES.map((e) => [e.id, e.source]))('%s solves with no diagnostics', (_id, source) => {
@@ -95,7 +106,7 @@ describe('analyzeBeam warnings', () => {
 		expect(out.results).toBeDefined();
 		expect(out.diagnostics).toEqual([{ severity: 'warning', message: NO_HORIZONTAL_RESTRAINT_MESSAGE }]);
 		expect(NO_HORIZONTAL_RESTRAINT_MESSAGE).toBe(
-			'No pin or fixed support: the beam is not restrained horizontally. Results assume vertical loads only.',
+			'No pin or fixed support: the beam is not restrained horizontally. Results assume vertical loads only',
 		);
 	});
 
@@ -111,6 +122,12 @@ describe('analyzeBeam warnings', () => {
 	it('formats the uplift force in the block units and with the requested decimals', () => {
 		const out = analyzeBeam(block('units kip ft', 'length 6', 'pin at 0', 'roller at 4', 'point 10 at 6'), { defaultUnits: 'kN-m', decimals: 3 });
 		expect(messages(out)).toEqual(['Support at x = 0 ft pulls the beam down (5.000 kip): it must be anchored against uplift']);
+	});
+
+	it('prints a large uplift force with the requested decimals, not in exponent form', () => {
+		// 2e7 N: the default label limit (1e7) would print "2.00e7 N".
+		const out = analyzeBeam(block('units N mm', 'length 6000', 'pin at 0', 'roller at 4000', 'point 4e7 at 6000'), { defaultUnits: 'kN-m', decimals: 2 });
+		expect(messages(out)).toEqual(['Support at x = 0 mm pulls the beam down (20000000.00 N): it must be anchored against uplift']);
 	});
 
 	it('warns about uplift at a roller', () => {
@@ -132,7 +149,10 @@ describe('analyzeBeam warnings', () => {
 		const out = run(block('length 6', 'pin at 0', 'roller at end', 'udl 4 kN/m down', 'E 200 GPa', 'I 200 cm^4'));
 		expect(out.results).toBeDefined();
 		expect(out.diagnostics).toEqual([
-			{ severity: 'warning', message: 'Maximum deflection is L/35: small-deflection theory may be inaccurate' },
+			{
+				severity: 'warning',
+				message: 'Maximum deflection is L/35: check E, I and the section units (small-deflection theory is also unreliable this large)',
+			},
 		]);
 	});
 
@@ -142,10 +162,35 @@ describe('analyzeBeam warnings', () => {
 		expect(out.diagnostics).toEqual([]);
 	});
 
+	// Regression: the warning divided the TOTAL length by the global peak, so on three 4 m spans
+	// it fired only at span/16.7. It now uses the governing span, like the results table.
+	it('judges the large-deflection warning per span on a continuous beam', () => {
+		// The 4 m end spans peak at 1.1015 mm × 8000 / 66 = 133.5 mm: 4 / 0.1335 = L/29.96,
+		// while 12 m / 0.1335 m = 90 would not have warned.
+		const out = run(block('length 12', 'pin at 0', 'roller at 4', 'roller at 8', 'roller at 12', 'udl 10 down', 'E 200 GPa', 'I 66 cm^4'));
+		expect(messages(out)).toEqual([
+			'Maximum deflection is L/29: check E, I and the section units (small-deflection theory is also unreliable this large)',
+		]);
+	});
+
+	// Regression: with E and I given but out of double-precision range the solver withholds the
+	// deflection (hasDeflection false), and the block used to show no deflection and no reason.
+	it('says why the deflection is missing when E and I are given but out of range', () => {
+		const out = run(block('length 6', 'pin at 0', 'roller at end', 'point 10 at 2', 'E 1e-300 Pa', 'I 8000 cm^4'));
+		expect(out.results?.hasDeflection).toBe(false);
+		expect(out.diagnostics).toEqual([{ severity: 'warning', message: DEFLECTION_UNAVAILABLE_MESSAGE }]);
+		// E·I overflowing to Infinity is withheld the same way.
+		const huge = run(block('length 6', 'pin at 0', 'roller at end', 'point 10 at 2', 'E 1e200 Pa', 'I 1e200 m^4'));
+		expect(huge.results?.hasDeflection).toBe(false);
+		expect(messages(huge)).toEqual([DEFLECTION_UNAVAILABLE_MESSAGE]);
+		// Without E or I there is nothing to explain.
+		expect(run(block('length 6', 'pin at 0', 'roller at end', 'point 10 at 2')).diagnostics).toEqual([]);
+	});
+
 	it('writes deflections larger than the span as a multiple of L', () => {
 		const results = solved(block('length 6', 'pin at 0', 'roller at end', 'udl 4 kN/m down', 'E 200 GPa', 'I 1 cm^4'));
 		const warning = engineeringWarnings(results, 'kN-m').find((d) => d.message.startsWith('Maximum deflection'));
-		expect(warning?.message).toMatch(/^Maximum deflection is \d+(\.\d)? × L: small-deflection theory may be inaccurate$/);
+		expect(warning?.message).toMatch(/^Maximum deflection is \d+(\.\d)? × L: check E, I and the section units \(small-deflection theory is also unreliable this large\)$/);
 	});
 
 	it('reports an equilibrium residual above 1e-6 of the force scale', () => {
@@ -177,17 +222,20 @@ describe('analyzeBeam warnings', () => {
 });
 
 describe('analyzeBeam errors', () => {
-	it('rejects a mechanism with the exact message, keeping the model for the beam drawing', () => {
+	it('rejects a mechanism with the solver message, keeping the model for the beam drawing', () => {
 		const out = run(block('length 6', 'pin at 0', 'hinge at 3', 'roller at 6', 'point 10 at 2'));
-		expect(out.diagnostics).toEqual([{ severity: 'error', message: UNSTABLE_MESSAGE }]);
-		expect(UNSTABLE_MESSAGE).toBe('The beam is unstable: it can move as a mechanism. Add a support or remove a hinge.');
+		expect(out.diagnostics).toHaveLength(1);
+		expect(out.diagnostics[0]?.severity).toBe('error');
+		expect(out.diagnostics[0]?.line).toBeUndefined();
+		expect(out.diagnostics[0]?.message).toMatch(UNSTABLE);
 		expect(out.model).toBeDefined();
 		expect(out.results).toBeUndefined();
 	});
 
 	it('rejects a single pin as a mechanism', () => {
 		const out = run(block('length 6', 'pin at 0', 'point 10 at 2'));
-		expect(messages(out)).toEqual([UNSTABLE_MESSAGE]);
+		expect(messages(out)).toHaveLength(1);
+		expect(messages(out)[0]).toMatch(UNSTABLE);
 	});
 
 	it('passes solver errors through as diagnostics', () => {
@@ -208,7 +256,7 @@ describe('analyzeBeam errors', () => {
 			['error', 3],
 			['error', 4],
 		]);
-		expect(out.diagnostics[0]?.message).toBe('Position 9 m is outside the beam (0 to 6 m)');
+		expect(out.diagnostics[0]?.message).toBe('Position 9 is outside the beam (0 to 6 m)');
 		expect(out.diagnostics[1]?.message).toMatch(/^Unknown statement "foo"/);
 	});
 
@@ -240,9 +288,26 @@ describe('analyzeBeam errors', () => {
 	});
 
 	it('keeps the deflection warning when nothing is broken', () => {
-		const out = run(block('length 6', 'pin at 0', 'roller at 6', 'material steel'));
+		const out = run(block('length 6', 'pin at 0', 'roller at 6', 'point 10 at 2', 'material steel'));
 		expect(out.results).toBeDefined();
 		expect(messages(out)).toEqual(['Deflection needs both a material or E, and a section or I']);
+	});
+
+	it('shows the missing-support error when the only broken line is an I alias', () => {
+		// Regression: "Ix" was taken for a misspelt "fix", which hid "Add at least one support".
+		const out = run(block('length 6 m', 'point 10 kN at 3', 'E 200 GPa', 'Ix 8000 cm4'));
+		expect(messages(out)).toEqual(['Add at least one support, for example: pin at 0']);
+	});
+
+	it('adds no false unlined messages after a failed E, I or length line', () => {
+		// Regression: the failed line left its value in the AST, giving "Add a unit to E" and
+		// "E overrides the material preset" without a line number on top of the real error.
+		const e = run(block('length 6', 'pin at 0', 'roller at 6', 'point 10 at 2', 'material steel', 'E 200 000 MPa', 'section rect 100 x 200 mm'));
+		expect(e.diagnostics).toEqual([{ severity: 'error', message: 'Write numbers without spaces, for example 200000', line: 6 }]);
+		const i = run(block('length 6', 'pin at 0', 'roller at 6', 'point 10 at 2', 'E 200 GPa', 'I 0 cm4 oops'));
+		expect(i.diagnostics).toEqual([{ severity: 'error', message: 'Unexpected "oops": the statement is already complete', line: 6 }]);
+		const length = run(block('length -6 m.', 'pin at 0', 'roller at end'));
+		expect(length.diagnostics).toEqual([{ severity: 'error', message: 'Unexpected ".": the statement is already complete', line: 1 }]);
 	});
 
 	it('reports an empty block as missing length and support', () => {
@@ -307,11 +372,78 @@ describe('analyzeBeam errors', () => {
 		}
 	});
 
-	it('handles a well-formed but huge block', () => {
+	it('handles a well-formed block at the load limit', () => {
 		const lines = ['length 100 m', 'pin at 0', 'roller at 100'];
-		for (let i = 1; i < 200; i++) lines.push(`point ${i % 7} kN down at ${i / 2} m`);
+		for (let i = 1; i <= MAX_LOADS; i++) lines.push(`point ${(i % 7) + 1} kN down at ${i / 2} m`);
 		const out = run(lines.join('\n'));
 		expect(out.results).toBeDefined();
+	});
+});
+
+describe('analyzeBeam size limits', () => {
+	/** A valid block with `supports` rollers after a pin, `hinges` hinges and `loads` point loads. */
+	function sized(supports: number, hinges: number, loads: number): string {
+		const lines = ['length 1000 m', 'pin at 0'];
+		for (let i = 1; i < supports; i++) lines.push(`roller at ${i * 10} m`);
+		// One hinge just right of each support keeps the beam stable.
+		for (let i = 1; i <= hinges; i++) lines.push(`hinge at ${i * 10 + 1} m`);
+		for (let i = 1; i <= loads; i++) lines.push(`point 1 kN at ${i * 0.5 + 0.25} m`);
+		return lines.join('\n');
+	}
+
+	it('analyses a block at the support, hinge and load limits', () => {
+		// MAX_NODES supports and hinges in total: 30 supports, 20 hinges.
+		const out = run(sized(30, MAX_NODES - 30, MAX_LOADS));
+		expect(out.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+		expect(out.results).toBeDefined();
+	});
+
+	it('refuses more supports and hinges than the limit before building the model', () => {
+		// Regression: a few hundred supports froze the app for tens of seconds per render.
+		const out = run(sized(31, MAX_NODES - 30, 1));
+		expect(out.diagnostics).toEqual([{ severity: 'error', message: `Too many supports and hinges (${MAX_NODES + 1}): the limit is ${MAX_NODES} per beam` }]);
+		expect(out.model).toBeUndefined();
+		expect(out.ast.supports).toHaveLength(31);
+	});
+
+	it('refuses more loads than the limit, keeping parse errors', () => {
+		const out = run(`${sized(2, 0, MAX_LOADS + 1)}\nlenght 6`);
+		expect(out.diagnostics.map((d) => d.message)).toEqual([
+			'Unknown statement "lenght". Did you mean "length"?',
+			`Too many loads (${MAX_LOADS + 1}): the limit is ${MAX_LOADS} per beam`,
+		]);
+		expect(out.model).toBeUndefined();
+	});
+
+	it('refuses an over-long block before parsing it, in the default units', () => {
+		const comment = `# ${'x'.repeat(MAX_SOURCE_CHARS)}`;
+		const out = analyzeBeam(`${SIMPLY_SUPPORTED}\n${comment}`, { defaultUnits: 'kip-ft' });
+		expect(out.diagnostics).toEqual([
+			{ severity: 'error', message: `This block is too long to analyse (more than ${MAX_SOURCE_CHARS} characters): split it into several beams` },
+		]);
+		expect(out.units).toBe('kip-ft');
+		expect(out.ast.loads).toEqual([]);
+		// Exactly at the limit is fine.
+		const padded = `${SIMPLY_SUPPORTED}\n#`.padEnd(MAX_SOURCE_CHARS, 'x');
+		expect(padded.length).toBe(MAX_SOURCE_CHARS);
+		expect(run(padded).results).toBeDefined();
+	});
+});
+
+describe('analyzeBeam hints', () => {
+	it('hints at adding a load when the beam has none, in the block units', () => {
+		// Regression: an unloaded beam solved silently with every value 0.00.
+		expect(run(block('length 6 m', 'pin at 0', 'roller at end')).diagnostics).toEqual([
+			{ severity: 'warning', message: 'No loads yet: add one, for example point 10 kN at 2 m' },
+		]);
+		expect(messages(run(block('units kip ft', 'length 20', 'pin at 0', 'roller at end')))).toEqual([
+			'No loads yet: add one, for example point 5 kip at 10 ft',
+		]);
+	});
+
+	it('does not add the hint when the loads are zero (they have their own warning)', () => {
+		const out = run(block('length 6 m', 'pin at 0', 'roller at end', 'point 0 kN at 2'));
+		expect(messages(out)).toEqual(['This point load is zero and is ignored']);
 	});
 });
 
@@ -368,6 +500,10 @@ describe('analyze helpers', () => {
 			{ severity: 'warning', message: 'c', line: 5 },
 		];
 		expect(sortDiagnostics(list).map((d) => d.message)).toEqual(['a', 'b', 'c', 'w']);
+	});
+
+	it('re-exports the force scale of the dependency-free scale module', () => {
+		expect(forceScale).toBe(forceScaleFromScale);
 	});
 
 	it('computes the force scale from loads and reactions', () => {

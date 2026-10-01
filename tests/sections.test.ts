@@ -100,6 +100,27 @@ describe('computeSection: invalid geometry', () => {
 	});
 });
 
+describe('computeSection: properties out of floating-point range', () => {
+	// Regression: 1e308 m dims gave I = Infinity and 1e-200 m dims gave I = 0, both silently.
+	const message = 'The section properties cannot be computed for these dimensions: check their size and unit';
+
+	it('rejects an I that overflows to Infinity', () => {
+		const result = computeSection('rect', [1e300, 1e300]);
+		expect(result).toEqual({ error: message });
+		expect(computeSection('circle', [1e100])).toEqual({ error: message });
+	});
+
+	it('rejects an I or area that underflows to zero', () => {
+		expect(computeSection('rect', [1e-200, 1e-200])).toEqual({ error: message });
+		expect(computeSection('box', [1e-90, 1e-90, 1e-91])).toEqual({ error: message });
+	});
+
+	it('still accepts very small and very large real sections', () => {
+		expect('error' in computeSection('rect', [1e-6, 1e-6])).toBe(false);
+		expect('error' in computeSection('rect', [100, 100])).toBe(false);
+	});
+});
+
 describe('SECTION_SHAPES metadata', () => {
 	it('has sentence-case labels and dimension names', () => {
 		expect(SECTION_SHAPES.rect).toMatchObject({ label: 'Rectangle', dims: ['b', 'h'], dimLabels: ['Width b', 'Depth h'] });

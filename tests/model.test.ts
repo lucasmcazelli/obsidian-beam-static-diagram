@@ -96,11 +96,19 @@ describe('buildModel: positions', () => {
 		expect(m.supports[1]?.x).toBe(m.length);
 	});
 
-	it('rejects positions outside the beam, formatted in the block units', () => {
-		expect(errors(`${BASE}\npoint 1 at 7`)).toEqual([{ severity: 'error', message: 'Position 7 m is outside the beam (0 to 6 m)', line: 4 }]);
-		expect(errors(`${BASE}\npoint 1 at -1`)[0]?.message).toBe('Position -1 m is outside the beam (0 to 6 m)');
+	it('rejects positions outside the beam, quoting the position as typed and the beam in the block units', () => {
+		expect(errors(`${BASE}\npoint 1 at 7`)).toEqual([{ severity: 'error', message: 'Position 7 is outside the beam (0 to 6 m)', line: 4 }]);
+		expect(errors(`${BASE}\npoint 1 at -1`)[0]?.message).toBe('Position -1 is outside the beam (0 to 6 m)');
 		expect(errors('units kip ft\nlength 30\npin at 0\nroller at 40 ft')[0]?.message).toBe('Position 40 ft is outside the beam (0 to 30 ft)');
-		expect(errors('length 6000\npin at 0\nroller at 6.5 m', 'N-mm')[0]?.message).toBe('Position 6500 mm is outside the beam (0 to 6000 mm)');
+		expect(errors('length 6000\npin at 0\nroller at 6.5 m', 'N-mm')[0]?.message).toBe('Position 6.5 m is outside the beam (0 to 6000 mm)');
+	});
+
+	it('never rounds an out-of-beam position until it equals the limit', () => {
+		// Regression: "at 6.0001" read "Position 6 m is outside the beam (0 to 6 m)".
+		expect(errors(`${BASE}\npoint 1 at 6.0001`)[0]?.message).toBe('Position 6.0001 is outside the beam (0 to 6 m)');
+		expect(errors(`${BASE}\npoint 1 at 6000.4 mm`)[0]?.message).toBe('Position 6000.4 mm is outside the beam (0 to 6 m)');
+		// A bare "from" that borrows the unit of "to" is quoted with that unit.
+		expect(errors(`${BASE}\nudl 1 from 7 to 8 m`)[0]?.message).toBe('Position 7 m is outside the beam (0 to 6 m)');
 	});
 
 	it('rejects a position with a non-length unit', () => {
@@ -183,6 +191,16 @@ describe('buildModel: errors', () => {
 		expect(errors('length 6 kN\npin at 0')[0]?.message).toContain('kN is not a length unit');
 	});
 
+	it('rejects lengths outside the range the solver handles accurately', () => {
+		// Regression: "length 1e-300 m" and "length 1e308 ft" ended in a misleading "supports too close together".
+		const message = 'The length is outside the supported range (1 µm to 100 km): check its unit';
+		expect(errors('length 1e-7 m\npin at 0')).toEqual([{ severity: 'error', message, line: 1 }]);
+		expect(errors('length 2e5 m\npin at 0')[0]?.message).toBe(message);
+		expect(errors('units kip ft\nlength 1e306 ft\npin at 0')[0]?.message).toBe(message);
+		expect(model('length 0.001 mm\npin at 0').length).toBeCloseTo(1e-6, 18);
+		expect(model('length 100 km'.replace(' km', '000 m') + '\npin at 0').length).toBe(1e5);
+	});
+
 	it('does not cascade from a missing length', () => {
 		expect(errors('pin at 0\nroller at end\npoint 1 at mid')).toHaveLength(1);
 	});
@@ -198,9 +216,11 @@ describe('buildModel: errors', () => {
 		expect(errors('length 6\npin at 3\nroller at 3000 mm')[0]?.line).toBe(3);
 	});
 
-	it('rejects hinges at the ends', () => {
-		expect(errors(`${BASE}\nhinge at 0`)).toEqual([{ severity: 'error', message: 'A hinge must be strictly inside the beam', line: 4 }]);
-		expect(errors(`${BASE}\nhinge at end`)[0]?.message).toBe('A hinge must be strictly inside the beam');
+	it('rejects hinges at the ends, suggesting a pinned support', () => {
+		expect(errors(`${BASE}\nhinge at 0`)).toEqual([
+			{ severity: 'error', message: 'A hinge must be strictly inside the beam: for a pinned support write pin at 0', line: 4 },
+		]);
+		expect(errors(`${BASE}\nhinge at end`)[0]?.message).toBe('A hinge must be strictly inside the beam: for a pinned support write pin at end');
 	});
 
 	it('rejects two hinges at the same position', () => {
@@ -224,11 +244,27 @@ describe('buildModel: errors', () => {
 		expect(model('length 6\nfixed at 0\nhinge at 3\nroller at 6\npoint 5 at 3').loads).toHaveLength(1);
 	});
 
-	it('rejects a distributed load that does not start before it ends', () => {
+	it('rejects a distributed load that does not start before it ends, quoting the ends as typed', () => {
 		expect(errors(`${BASE}\nudl 1 from 4 to 2`)).toEqual([
-			{ severity: 'error', message: 'The load must start before it ends: "from" (4 m) must be less than "to" (2 m)', line: 4 },
+			{ severity: 'error', message: 'The load must start before it ends: "from" (4) must be less than "to" (2)', line: 4 },
 		]);
 		expect(errors(`${BASE}\nlinear 1 to 2 from 3 to 3`)[0]?.message).toContain('must start before it ends');
+		// Regression: "from 3.0001 to 3" read '"from" (3 m) must be less than "to" (3 m)'.
+		expect(errors(`${BASE}\nudl 5 kN/m from 3.0001 to 3`)[0]?.message).toBe(
+			'The load must start before it ends: "from" (3.0001) must be less than "to" (3)',
+		);
+		expect(errors(`${BASE}\nudl 1 from 4 to 2 m`)[0]?.message).toBe('The load must start before it ends: "from" (4 m) must be less than "to" (2 m)');
+	});
+
+	it('rejects a distributed load too short for the solver to keep', () => {
+		// Regression: such loads passed validation and the solver dropped them silently (reactions 0).
+		const message = 'This distributed load is too short to analyse: make it longer or use a point load';
+		expect(errors('length 6000 m\npin at 0\nroller at end\nudl 1e6 kN/m from 2 to 2.000005')).toEqual([{ severity: 'error', message, line: 4 }]);
+		expect(errors(`${BASE}\nudl 1e12 kN/m from 2 to 2.000000001`)[0]?.message).toBe(message);
+		// 1.8 times the merge tolerance, straddling a support: both ends can snap to it.
+		expect(errors('length 6000 m\npin at 0\nroller at 3000\nroller at end\nudl 1e9 kN/m from 2999.9999946 to 3000.0000054')[0]?.message).toBe(message);
+		// Just over twice the tolerance is kept.
+		expect(model(`${BASE}\nudl 1 kN/m from 2 to 2.0000000121`).loads).toHaveLength(1);
 	});
 
 	it('rejects a half-specified extent in an AST built by the editor', () => {
@@ -250,7 +286,7 @@ describe('buildModel: errors', () => {
 	});
 
 	it('rejects unknown materials and lists the valid names', () => {
-		expect(errors(`${BASE}\nmaterial brass\nsection rect 1 x 2`)).toEqual([
+		expect(errors(`${BASE}\nmaterial brass\nsection rect 1 x 2 mm`)).toEqual([
 			{
 				severity: 'error',
 				message: 'Unknown material "brass": use steel, stainless, aluminium, timber or concrete, or give E directly, for example: E 200 GPa',
@@ -288,7 +324,29 @@ describe('buildModel: errors', () => {
 			{ severity: 'error', message: 'The wall thickness t must be less than half the diameter d', line: 5 },
 		]);
 		expect(errors(`${BASE}\nmaterial steel\nsection rect 100 x 200 kN`)[0]?.message).toContain('kN is not a length unit');
-		expect(errors(`${BASE}\nmaterial steel\nsection rect 0 x 200`)[0]?.message).toBe('Section dimensions must be greater than zero');
+		expect(errors(`${BASE}\nmaterial steel\nsection rect 0 x 200 mm`)[0]?.message).toBe('Section dimensions must be greater than zero');
+	});
+
+	it('rejects sections whose properties overflow or underflow', () => {
+		// Regression: "I = Infinity cm⁴" and "I = 0 cm⁴" with the deflection silently gone.
+		const message = 'The section properties cannot be computed for these dimensions: check their size and unit';
+		expect(errors(`${BASE}\nmaterial steel\nsection rect 1e300 x 1e300 mm`)).toEqual([{ severity: 'error', message, line: 5 }]);
+		expect(errors(`${BASE}\nmaterial steel\nsection rect 1e-200 x 1e-200 m`)[0]?.message).toBe(message);
+	});
+
+	it('requires a unit on section dimensions where bare numbers would be mm or in but lengths are m or ft', () => {
+		// Regression: "section rect 0.1 x 0.2" in kN m (meant as metres) gave I = 6.67e-9 cm⁴ and
+		// a deflection of 3.37e12 mm, with only a "small-deflection theory" warning.
+		expect(errors(`${BASE}\nmaterial steel\nsection rect 0.1 x 0.2`)).toEqual([
+			{ severity: 'error', message: 'Add a unit to the section dimensions, for example: section rect 100 x 200 mm', line: 5 },
+		]);
+		expect(errors('units kip ft\nlength 10\npin at 0\nE 29000 ksi\nsection rect 0.5 x 1')[0]?.message).toBe(
+			'Add a unit to the section dimensions, for example: section rect 4 x 8 in',
+		);
+		// One bare dimension among per-dimension units is just as ambiguous.
+		expect(errors(`${BASE}\nE 200 GPa\nsection rect 100 mm x 200`)[0]?.message).toContain('Add a unit to the section dimensions');
+		// The missing unit is reported once, without a misleading deflection warning.
+		expect(build(`${BASE}\nE 200 GPa\nsection circle 100`).diagnostics).toHaveLength(1);
 	});
 
 	it('reports every independent error, sorted by line, whole-beam issues last', () => {
@@ -372,13 +430,15 @@ describe('buildModel: stiffness', () => {
 		expect(model(`${BASE}\nE 200 GPa\nsection ibeam 150 x 300 x 7.1 x 10.7 mm`).section?.label).toBe(
 			'I-beam (no fillets) 150 × 300 × 7.1 × 10.7 mm',
 		);
-		expect(model('units kip ft\nlength 10\npin at 0\nE 29000 ksi\nsection rect 4 x 8').section?.label).toBe('Rectangle 4 × 8 in');
+		expect(model('units kip ft\nlength 10\npin at 0\nE 29000 ksi\nsection rect 4 x 8 in').section?.label).toBe('Rectangle 4 × 8 in');
 		expect(model(`${BASE}\nE 200 GPa\nsection rect 100 mm x 0.2 m`).section?.label).toBe('Rectangle 100 × 200 mm');
 	});
 
-	it('uses the default section unit for bare dimensions', () => {
-		expect(model(`${BASE}\nE 200 GPa\nsection circle 100`).section?.dims).toEqual([0.1]);
-		expect(model('units kip ft\nlength 10\npin at 0\nE 29000 ksi\nsection circle 4').section?.dims[0]).toBeCloseTo(0.1016, 12);
+	it('uses the default section unit for bare dimensions where it equals the length unit', () => {
+		expect(model('length 6000\npin at 0\nE 200000 MPa\nsection circle 100', 'N-mm').section?.dims).toEqual([0.1]);
+		expect(model('units lb in\nlength 120\npin at 0\nE 29000 ksi\nsection circle 4').section?.dims[0]).toBeCloseTo(0.1016, 12);
+		// A shared unit after the last dimension covers the bare ones.
+		expect(model(`${BASE}\nE 200 GPa\nsection rect 100 x 200 mm`).section?.dims).toEqual([0.1, 0.2]);
 	});
 });
 

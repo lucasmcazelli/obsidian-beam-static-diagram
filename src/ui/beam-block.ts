@@ -9,7 +9,7 @@ import { MarkdownRenderChild, debounce, setIcon, type MarkdownPostProcessorConte
 import type { AnalysisOutput, UnitSystemId } from '../core/types';
 import type BeamStaticsPlugin from '../main';
 import { analyzeSafely, renderBeamOutput } from './beam-view';
-import { BeamEditorModal, WRITE_BACK_FAILED } from './editor-modal';
+import { BeamEditorModal } from './editor-modal';
 import { replaceBlockSource } from './write-back';
 
 /** Width used before the block is attached to the page and has a measurable size. */
@@ -23,6 +23,13 @@ export class BeamBlockRenderChild extends MarkdownRenderChild {
 	private readonly plugin: BeamStaticsPlugin;
 	private readonly source: string;
 	private readonly ctx: MarkdownPostProcessorContext;
+	/**
+	 * Path of the note this block is in. Starts as ctx.sourcePath, which is a
+	 * snapshot from render time: renaming the note does not change the block's
+	 * text, so the block is not re-rendered and ctx keeps the old path. The
+	 * vault's rename event keeps this copy current for saving.
+	 */
+	private sourcePath: string;
 	private outputEl: HTMLElement | null = null;
 	/**
 	 * Cached analysis (it does not depend on width) and the settings it was
@@ -40,6 +47,7 @@ export class BeamBlockRenderChild extends MarkdownRenderChild {
 		this.plugin = plugin;
 		this.source = source;
 		this.ctx = ctx;
+		this.sourcePath = ctx.sourcePath;
 	}
 
 	onload(): void {
@@ -49,13 +57,31 @@ export class BeamBlockRenderChild extends MarkdownRenderChild {
 		this.render();
 		this.plugin.registerBlock(this);
 		this.register(() => this.plugin.unregisterBlock(this));
+		this.registerEvent(
+			this.plugin.app.vault.on('rename', (file, oldPath) => {
+				if (oldPath === this.sourcePath) this.sourcePath = file.path;
+			}),
+		);
 		this.watchWidth();
 	}
 
-	/** Re-analyses (the default units or decimals may have changed) and redraws. Called after a settings change. */
+	/** Redraws after a settings change; render() re-analyses only when the default units or decimals changed. */
 	refresh(): void {
-		this.analysis = null;
 		this.render();
+	}
+
+	/**
+	 * Stops the block for good because the plugin is being unloaded (disabled
+	 * or updated). The block belongs to the note's renderer, not to the
+	 * plugin, so Obsidian does not unload it then: without this, its observers
+	 * would keep redrawing with the old code and its edit button would keep
+	 * writing to the vault through the old plugin instance. The drawing stays
+	 * on screen until the note re-renders. Unloading again later (when the
+	 * renderer does) is a no-op.
+	 */
+	retire(): void {
+		this.unload();
+		this.containerEl.querySelector('.bsd-toolbar')?.remove();
 	}
 
 	/** Draws the block at the output element's current width. */
@@ -156,11 +182,11 @@ export class BeamBlockRenderChild extends MarkdownRenderChild {
 			initialSource: this.source,
 			mode: 'update',
 			onSubmit: async (text) => {
-				// Nothing to write: succeed without touching the file (and its modified time).
+				// Nothing to write: succeed without touching the file (and its modified time). A block with
+				// bare numbers is not "unchanged": the editor adds its units line (see withExplicitUnits).
 				if (text === this.source) return true;
-				return replaceBlockSource(this.plugin.app, this.ctx, this.containerEl, text, this.source);
+				return replaceBlockSource(this.plugin.app, this.ctx, this.containerEl, text, this.source, this.sourcePath);
 			},
-			failureMessage: WRITE_BACK_FAILED,
 		}).open();
 	}
 }
