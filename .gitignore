@@ -23,3 +23,6 @@ data.json
 
 # test coverage output
 coverage
+
+# Python bytecode from the dev-only oracle script
+__pycache__/
